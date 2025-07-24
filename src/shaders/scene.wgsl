@@ -21,6 +21,7 @@ fn get_sphere(index: u32) -> Sphere {
     s.center = vec3<f32>(scene_buffer[offset], scene_buffer[offset + 1], scene_buffer[offset + 2]);
     s.radius = scene_buffer[offset + 3];
     s.color = vec3<f32>(scene_buffer[offset + 4], scene_buffer[offset + 5], scene_buffer[offset + 6]);
+    s.materialType = i32(scene_buffer[offset + 7]);
     return s;
 }
 
@@ -33,6 +34,7 @@ fn get_cylinder(index: u32) -> Cylinder {
     c.radius = scene_buffer[offset + 3];
     c.p2 = vec3<f32>(scene_buffer[offset + 4], scene_buffer[offset + 5], scene_buffer[offset + 6]);
     c.color = vec3<f32>(scene_buffer[offset + 8], scene_buffer[offset + 9], scene_buffer[offset + 10]);
+    c.materialType = i32(scene_buffer[offset + 11]);
     return c;
 }
 
@@ -48,7 +50,7 @@ fn get_box(index: u32) -> Box {
     box.size = vec3<f32>(scene_buffer[offset + 4u], scene_buffer[offset + 5u], scene_buffer[offset + 6u]);
     box.rotation = vec3<f32>(scene_buffer[offset + 8u], scene_buffer[offset + 9u], scene_buffer[offset + 10u]);
     box.color = vec3<f32>(scene_buffer[offset + 12u], scene_buffer[offset + 13u], scene_buffer[offset + 14u]);
-    
+    box.materialType = i32(scene_buffer[offset + 15u]);
     return box;
 }
 
@@ -73,8 +75,8 @@ fn get_plane(index: u32) -> Plane {
     plane.rotation = vec3<f32>(scene_buffer[offset + 12u], scene_buffer[offset + 13u], scene_buffer[offset + 14u]);
     // offset + 15는 padding
     plane.color = vec3<f32>(scene_buffer[offset + 16u], scene_buffer[offset + 17u], scene_buffer[offset + 18u]);
-    // offset + 19는 padding
-    
+    plane.materialType = i32(scene_buffer[offset + 19u]);
+    // offset + 20은 padding
     return plane;
 }
 

@@ -3,6 +3,7 @@ struct Sphere {
     center: vec3<f32>,
     radius: f32,
     color: vec3<f32>,
+    materialType: i32,
     // padding
 };
 
@@ -12,6 +13,7 @@ struct Cylinder {
     p2: vec3<f32>,
     // padding
     color: vec3<f32>,
+    materialType: i32,
     // padding
 };
 
@@ -23,6 +25,7 @@ struct Box {
     rotation: vec3<f32>,    // 회전 각도
     padding3: f32,
     color: vec3<f32>,
+    materialType: i32,
     padding4: f32,
 };
 
@@ -36,6 +39,7 @@ struct Plane {
     rotation: vec3<f32>,
     padding4: f32,
     color: vec3<f32>,
+    materialType: i32,
     padding5: f32,
 }
 
@@ -50,6 +54,7 @@ struct Hit {
     t: f32,
     normal: vec3<f32>,
     color: vec3<f32>,
+    materialType: i32,
 };
 
 struct Interval {

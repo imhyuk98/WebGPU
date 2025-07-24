@@ -33,99 +33,154 @@ fn random_float(seed: ptr<function, u32>) -> f32 {
     return f32(*seed) / f32(0xffffffffu);
 }
 
+// Reflect function for mirror materials
+fn reflect(v: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    return v - 2.0 * dot(v, n) * n;
+}
+
 // The contents of structs.wgsl, scene.wgsl, and intersections.wgsl will be prepended here by the TypeScript code.
 
 fn trace(r: Ray) -> vec3<f32> {
-    // Background color (sky gradient)
-    let t = r.direction.y * 0.5 + 0.5;
-    let bottom_color = vec3<f32>(0.5, 0.7, 1.0);
-    let top_color = vec3<f32>(1.0, 1.0, 1.0);
-    let background_color = mix(bottom_color, top_color, t);
+    var current_ray = r;
+    var final_color = vec3<f32>(1.0, 1.0, 1.0); // 누적 색상 (곱셈용)
+    
+    // 반사를 반복문으로 처리 (재귀 대신) - 성능 최적화
+    for (var bounce = 0; bounce < 10; bounce = bounce + 1) { // 다시 10으로 복원
+        // Background color (sky gradient)
+        let t = current_ray.direction.y * 0.5 + 0.5;
+        let bottom_color = vec3<f32>(0.5, 0.7, 1.0);
+        let top_color = vec3<f32>(1.0, 1.0, 1.0);
+        let background_color = mix(bottom_color, top_color, t);
 
-    var closest_hit: Hit;
-    closest_hit.t = 1000000.0;
-    closest_hit.color = background_color;
+        var closest_hit: Hit;
+        closest_hit.t = 1000000.0;
+        closest_hit.color = background_color;
+        closest_hit.materialType = -1; // No material initially
 
-    let num_spheres = get_num_spheres();
-    for (var i = 0u; i < num_spheres; i = i + 1u) {
-        let sphere = get_sphere(i);
-        let t_sphere = ray_sphere_intersect(r, sphere);
-        if (t_sphere > 0.0 && t_sphere < closest_hit.t) {
-            closest_hit.t = t_sphere;
-            let hit_point = r.origin + r.direction * t_sphere;
-            closest_hit.normal = normalize(hit_point - sphere.center);
-            closest_hit.color = sphere.color;
-        }
-    }
-
-    let num_cylinders = get_num_cylinders();
-    for (var i = 0u; i < num_cylinders; i = i + 1u) {
-        let cylinder = get_cylinder(i);
-        let t_cylinder = ray_cylinder_intersect(r, cylinder);
-
-        if (t_cylinder > 0.0 && t_cylinder < closest_hit.t) {
-            closest_hit.t = t_cylinder;
-            let hit_point = r.origin + r.direction * t_cylinder;
-            
-            let p1 = cylinder.p1;
-            let ba = cylinder.p2 - p1;
-            let oc = hit_point - p1;
-            let baba = dot(ba, ba);
-            let y = dot(oc, ba);
-
-            if (y < 0.01) {
-                closest_hit.normal = -normalize(ba);
-            } else if (y > baba - 0.01) {
-                closest_hit.normal = normalize(ba);
-            } else {
-                let p = oc - ba * (y / baba);
-                closest_hit.normal = normalize(p);
+        let num_spheres = get_num_spheres();
+        for (var i = 0u; i < num_spheres; i = i + 1u) {
+            let sphere = get_sphere(i);
+            let t_sphere = ray_sphere_intersect(current_ray, sphere);
+            if (t_sphere > 0.0 && t_sphere < closest_hit.t) {
+                closest_hit.t = t_sphere;
+                let hit_point = current_ray.origin + current_ray.direction * t_sphere;
+                var normal = normalize(hit_point - sphere.center);
+                
+                closest_hit.normal = normal;
+                closest_hit.color = sphere.color;
+                closest_hit.materialType = sphere.materialType;
             }
-            closest_hit.color = cylinder.color; 
         }
-    }
 
-    let num_boxes = get_num_boxes();
-    for (var i = 0u; i < num_boxes; i = i + 1u) {
-        let box = get_box(i);
-        let t_box = ray_box_intersect(r, box);
+        let num_cylinders = get_num_cylinders();
+        for (var i = 0u; i < num_cylinders; i = i + 1u) {
+            let cylinder = get_cylinder(i);
+            let t_cylinder = ray_cylinder_intersect(current_ray, cylinder);
 
-        if (t_box > 0.0 && t_box < closest_hit.t) {
-            closest_hit.t = t_box;
-            let hit_point = r.origin + r.direction * t_box;
+            if (t_cylinder > 0.0 && t_cylinder < closest_hit.t) {
+                closest_hit.t = t_cylinder;
+                let hit_point = current_ray.origin + current_ray.direction * t_cylinder;
+                
+                let p1 = cylinder.p1;
+                let ba = cylinder.p2 - p1;
+                let oc = hit_point - p1;
+                let baba = dot(ba, ba);
+                let y = dot(oc, ba);
+
+                var normal: vec3<f32>;
+                if (y < 0.01) {
+                    normal = -normalize(ba);
+                } else if (y > baba - 0.01) {
+                    normal = normalize(ba);
+                } else {
+                    let p = oc - ba * (y / baba);
+                    normal = normalize(p);
+                }
+                
+                closest_hit.normal = normal;
+                closest_hit.color = cylinder.color;
+                closest_hit.materialType = cylinder.materialType; 
+            }
+        }
+
+        let num_boxes = get_num_boxes();
+        for (var i = 0u; i < num_boxes; i = i + 1u) {
+            let box = get_box(i);
+            let t_box = ray_box_intersect(current_ray, box);
+
+            if (t_box > 0.0 && t_box < closest_hit.t) {
+                closest_hit.t = t_box;
+                let hit_point = current_ray.origin + current_ray.direction * t_box;
+                
+                // 직육면체의 법선 계산
+                var box_normal = calculate_box_normal(box, hit_point);
+                
+                closest_hit.normal = box_normal;
+                closest_hit.color = box.color;
+                closest_hit.materialType = box.materialType;
+            }
+        }
+
+        // Plane 검사 추가
+        let num_planes = get_num_planes();
+        for (var i = 0u; i < num_planes; i = i + 1u) {
+            let plane = get_plane(i);
+            let t_plane = ray_plane_intersect(current_ray, plane);
+
+            if (t_plane > 0.0 && t_plane < closest_hit.t) {
+                closest_hit.t = t_plane;
+                let hit_point = current_ray.origin + current_ray.direction * t_plane;
+                var plane_normal = calculate_plane_normal(plane, hit_point);
+                
+                closest_hit.normal = plane_normal;
+                closest_hit.color = plane.color;
+                closest_hit.materialType = plane.materialType;
+            }
+        }
+
+        // 교차점이 있는지 확인
+        if (closest_hit.t < 100000.0) {
+            let hit_point = current_ray.origin + current_ray.direction * closest_hit.t;
             
-            // 직육면체의 법선 계산
-            let box_normal = calculate_box_normal(box, hit_point);
-            closest_hit.normal = box_normal;
-            closest_hit.color = box.color;
+            // Material handling
+            if (closest_hit.materialType == 1) { // METAL material - 100% reflection
+                // 색상 누적 (거울 재질의 색상 적용)
+                final_color = final_color * closest_hit.color;
+                
+                // 더 공격적인 에너지 감쇠로 성능 개선
+                let brightness = (final_color.r + final_color.g + final_color.b) / 3.0;
+                if (brightness < 0.1) { // 0.05 → 0.1로 더 높임
+                    break; // 일찍 종료하여 성능 개선
+                }
+                
+                // 완전한 거울 반사
+                let reflected_dir = reflect(current_ray.direction, closest_hit.normal);
+                
+                // 다음 반사 광선 설정 (더 작은 오프셋으로 성능 개선)
+                current_ray.origin = hit_point + closest_hit.normal * 0.005; // 0.01 → 0.005
+                current_ray.direction = reflected_dir;
+                current_ray.t_min = 0.001;
+                current_ray.t_max = 1000.0;
+                
+                // 반복문 계속 (다음 반사)
+            } else {
+                // LAMBERTIAN material - diffuse lighting (반사 종료)
+                let light_dir = normalize(vec3<f32>(1.0, 1.0, 0.5));
+                let diffuse = max(dot(closest_hit.normal, light_dir), 0.2);
+                final_color = final_color * closest_hit.color * diffuse;
+                break; // 반복문 종료
+            }
+        } else {
+            // 배경에 도달 (반사 종료)
+            final_color = final_color * closest_hit.color;
+            break; // 반복문 종료
         }
     }
-
-    // Plane 검사 추가
-    let num_planes = get_num_planes();
-    for (var i = 0u; i < num_planes; i = i + 1u) {
-        let plane = get_plane(i);
-        let t_plane = ray_plane_intersect(r, plane);
-
-        if (t_plane > 0.0 && t_plane < closest_hit.t) {
-            closest_hit.t = t_plane;
-            let hit_point = r.origin + r.direction * t_plane;
-            closest_hit.normal = calculate_plane_normal(plane, hit_point);
-            closest_hit.color = plane.color;
-        }
-    }
-
-    // 만약 어떤 객체와도 교차하지 않았다면 배경색을 반환
-    if (closest_hit.t < 100000.0) {
-        let light_dir = normalize(vec3<f32>(1.0, 1.0, 0.5));
-        let diffuse = max(dot(closest_hit.normal, light_dir), 0.2);
-        return closest_hit.color * diffuse;
-    }
-
-    return closest_hit.color;
+    
+    return final_color;
 }
 
-@compute @workgroup_size(8, 8, 1)
+@compute @workgroup_size(16, 16, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let width = f32(textureDimensions(screen).x);
     let height = f32(textureDimensions(screen).y);

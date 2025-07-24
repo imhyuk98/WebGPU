@@ -149,6 +149,7 @@ export class Renderer {
             sceneData.set(sphere.center, offset);
             sceneData[offset + 3] = sphere.radius;
             sceneData.set(sphere.color, offset + 4);
+            sceneData[offset + 7] = sphere.material.type;
             offset += sphereStride;
         }
 
@@ -166,9 +167,10 @@ export class Renderer {
             sceneData[offset + 3] = cylinder.radius;
             // p2: vec3<f32> (offset 4, 3 floats)
             sceneData.set(p2, offset + 4);
-            // color: vec3<f32> (offset 8, 3 floats) - starts at byte 32
+            // color: vec3<f32> (offset 8, 3 floats)
             sceneData.set(cylinder.color, offset + 8);
-
+            // materialType: i32 (offset 11)
+            sceneData[offset + 11] = cylinder.material.type;
             offset += cylinderStride;
         }
 
@@ -196,8 +198,7 @@ export class Renderer {
             sceneData[offset + 12] = box.color[0];
             sceneData[offset + 13] = box.color[1];
             sceneData[offset + 14] = box.color[2];
-            sceneData[offset + 15] = 0; // padding
-            
+            sceneData[offset + 15] = box.material.type;
             offset += boxStride;
         }
 
@@ -222,7 +223,7 @@ export class Renderer {
             sceneData[offset + 16] = plane.color[0];
             sceneData[offset + 17] = plane.color[1];
             sceneData[offset + 18] = plane.color[2];
-            sceneData[offset + 19] = 0; // padding
+            sceneData[offset + 19] = plane.material.type;
             offset += planeStride;
         }
 
@@ -439,7 +440,7 @@ export class Renderer {
         this.device.queue.writeBuffer(this.camera_buffer, 0, cameraData);
 
         // --- Update Uniforms ---
-        const samples_per_pixel = 100; // Can be changed
+        const samples_per_pixel = 16; // 100 → 16으로 성능 개선
         const seed = Math.random() * 4294967295; // Random u32
         this.device.queue.writeBuffer(this.uniform_buffer, 0, new Uint32Array([samples_per_pixel, seed]));
 
@@ -449,8 +450,8 @@ export class Renderer {
         ray_trace_pass.setPipeline(this.ray_tracing_pipeline);
         ray_trace_pass.setBindGroup(0, this.ray_tracing_bind_group);
         ray_trace_pass.dispatchWorkgroups(
-            Math.ceil(this.canvas.width / 8), 
-            Math.ceil(this.canvas.height / 8), 1);
+            Math.ceil(this.canvas.width / 16), 
+            Math.ceil(this.canvas.height / 16), 1);
         ray_trace_pass.end();
 
         const textureView : GPUTextureView = this.context.getCurrentTexture().createView();

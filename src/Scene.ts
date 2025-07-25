@@ -1,4 +1,4 @@
-import { Scene, Sphere, Cylinder, Box, Plane } from "./renderer";
+import { Scene, Sphere, Cylinder, Box, Plane, Circle, Ellipse, Line, Torus } from "./renderer";
 import { Material, MaterialType, MaterialTemplates } from "./material";
 
 // --- Helper Functions ---
@@ -25,7 +25,11 @@ export function createBasicScene(): Scene {
         spheres: [],
         cylinders: [],
         boxes: [],
-        planes: []
+        planes: [],
+        circles: [],
+        ellipses: [],
+        lines: [],
+        toruses: []
     };
 
     // 바닥 평면
@@ -66,7 +70,11 @@ export function createRandomScene(): Scene {
         spheres: [],
         cylinders: [],
         boxes: [],
-        planes: []
+        planes: [],
+        circles: [],
+        ellipses: [],
+        lines: [],
+        toruses: []
     };
 
     // 바닥 구
@@ -160,7 +168,11 @@ export function createMixedScene(): Scene {
         spheres: [],
         cylinders: [],
         boxes: [],
-        planes: []
+        planes: [],
+        circles: [],
+        ellipses: [],
+        lines: [],
+        toruses: []
     };
 
     // 바닥 평면
@@ -215,7 +227,11 @@ export function createShowcaseScene(): Scene {
         spheres: [],
         cylinders: [],
         boxes: [],
-        planes: []
+        planes: [],
+        circles: [],
+        ellipses: [],
+        lines: [],
+        toruses: []
     };
 
     // 🏠 바닥 평면 (회색) - 카메라 앞쪽 아래에 배치
@@ -265,6 +281,46 @@ export function createShowcaseScene(): Scene {
         material: MaterialTemplates.MATTE
     });
 
+    // 🟠 Circle (원) - 맨 오른쪽, sphere와 같은 높이 및 반지름
+    scene.circles.push({
+        center: [8, 0, -8], // 다른 도형들과 같은 높이 (y=0), 맨 오른쪽 (x=8)
+        radius: 1.0, // sphere와 같은 반지름
+        normal: [0, 0, 1], // Z축을 향하도록 (카메라 쪽)
+        color: [1.0, 0.5, 0.2], // 주황색
+        material: MaterialTemplates.MIRROR
+    });
+
+    // 🟡 Ellipse (타원) - Circle 옆에 추가
+    scene.ellipses.push({
+        center: [12, 0, -8], // Circle에서 더 멀리 떨어뜨림 (x=10 → x=12)
+        radiusA: 1.5, // 장축 반지름 (가로)
+        radiusB: 0.8, // 단축 반지름 (세로)
+        normal: [0, 0, 1], // Z축을 향하도록 (카메라 쪽)
+        rotation: [0, 0, 0.5], // Z축 중심으로 약간 회전 (약 28.6도)
+        color: [1.0, 1.0, 0.2], // 밝은 노란색
+        material: MaterialTemplates.MATTE // 거울 재질 → 무광 재질로 변경
+    });
+
+    // 🟤 Line (선) - Ellipse 옆에 추가
+    scene.lines.push({
+        start: [14, -1, -8], // Ellipse 옆에서 시작
+        end: [14, 1, -8],    // 위쪽으로 2 단위 길이
+        thickness: 0.005,     // 훨씬 얇은 두께 (0.1 → 0.02)
+        color: [0.6, 0.3, 0.1], // 갈색
+        material: MaterialTemplates.MATTE
+    });
+
+    // 🍩 Torus (토러스) - Line 옆에 추가
+    scene.toruses.push({
+        center: [16, 0, -8], // Line 옆 (x=16)
+        rotation: [Math.PI/2, 0, 0], // X축 중심으로 90도 회전 (세워서 보이게)
+        majorRadius: 1.2,    // 주반지름 (도넛 중심에서 튜브 중심까지)
+        minorRadius: 0.4,    // 부반지름 (튜브 반지름)
+        degree: 270,         // 3/4 토러스 (270도)
+        color: [0.8, 0.2, 0.8], // 자주색
+        material: MaterialTemplates.MIRROR
+    });
+
     return scene;
 }
 
@@ -274,7 +330,11 @@ export function createMetalTestScene(): Scene {
         spheres: [],
         cylinders: [],
         boxes: [],
-        planes: []
+        planes: [],
+        circles: [],
+        ellipses: [],
+        lines: [],
+        toruses: []
     };
 
     // 바닥 평면 (무광 회색)

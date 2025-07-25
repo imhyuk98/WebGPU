@@ -48,7 +48,43 @@ export interface Plane {
     normal: vec3;      // 평면의 법선 벡터
     size: [number, number];  // [width, height]
     rotation: vec3;    // 평면 회전
-    color: vec3;
+    color: vec3;       // 색상
+    material: Material;
+}
+
+export interface Circle {
+    center: vec3;      // 원의 중심점
+    radius: number;    // 반지름
+    normal: vec3;      // 원이 놓인 평면의 법선
+    color: vec3;       // 색상
+    material: Material;
+}
+
+export interface Ellipse {
+    center: vec3;      // 타원의 중심점
+    radiusA: number;   // 장축 반지름
+    radiusB: number;   // 단축 반지름
+    normal: vec3;      // 타원이 놓인 평면의 법선
+    rotation: vec3;    // 타원의 회전 각도 [x, y, z] (라디안)
+    color: vec3;       // 색상
+    material: Material;
+}
+
+export interface Line {
+    start: vec3;       // 선의 시작점
+    end: vec3;         // 선의 끝점
+    thickness: number; // 선의 두께
+    color: vec3;       // 색상
+    material: Material;
+}
+
+export interface Torus {
+    center: vec3;        // 토러스 중심점
+    rotation: vec3;      // 회전 각도 [x, y, z] (라디안)
+    majorRadius: number; // 주반지름 (R1) - 도넛 중심에서 튜브 중심까지
+    minorRadius: number; // 부반지름 (r1) - 튜브의 반지름
+    degree: number;      // 각도 (0~360도, 일부 토러스 렌더링)
+    color: vec3;         // 색상
     material: Material;
 }
 
@@ -58,6 +94,10 @@ export interface Scene {
     cylinders: Cylinder[];
     boxes: Box[];
     planes: Plane[];
+    circles: Circle[];
+    ellipses: Ellipse[];
+    lines: Line[];
+    toruses: Torus[];
 }
 
 
@@ -128,13 +168,25 @@ export class Renderer {
     async makePipeline(scene: Scene) {
 
         // --- Data Packing ---
-        const headerSize = 4; // 4 floats for the header
+        const headerSize = 8; // 8 floats for the header (spheres, cylinders, boxes, planes, circles, ellipses, lines, toruses)
         const sphereStride = 8; // 8 floats per sphere (vec3, float, vec3, float)
         const cylinderStride = 12; // 12 floats per cylinder based on WGSL struct alignment
         const boxStride = 16; // 16 floats per box (vec3, vec3, vec3, vec3)
         const planeStride = 20;  // Plane 크기
+        const circleStride = 12; // Circle 크기 (center(3) + radius(1) + normal(3) + padding(1) + color(3) + materialType(1))
+        const ellipseStride = 20; // Ellipse 크기 (center(3) + padding(1) + radiusA(1) + radiusB(1) + padding(2) + normal(3) + padding(1) + rotation(3) + padding(1) + color(3) + materialType(1))
+        const lineStride = 16; // Line 크기 (start(3) + padding(1) + end(3) + thickness(1) + color(3) + materialType(1))
+        const torusStride = 20; // Torus 크기 (center(3) + padding(1) + rotation(3) + padding(1) + majorRadius(1) + minorRadius(1) + degree(1) + padding(1) + color(3) + materialType(1))
 
-        const totalSizeInFloats = headerSize + scene.spheres.length * sphereStride + scene.cylinders.length * cylinderStride + scene.boxes.length * boxStride + scene.planes.length * planeStride;  // 이 줄 추가!;
+        const totalSizeInFloats = headerSize + 
+                                  scene.spheres.length * sphereStride + 
+                                  scene.cylinders.length * cylinderStride + 
+                                  scene.boxes.length * boxStride + 
+                                  scene.planes.length * planeStride +
+                                  scene.circles.length * circleStride +
+                                  scene.ellipses.length * ellipseStride +
+                                  scene.lines.length * lineStride +
+                                  scene.toruses.length * torusStride;
         const sceneData = new Float32Array(totalSizeInFloats);
 
         // 1. Write header
@@ -142,6 +194,10 @@ export class Renderer {
         sceneData[1] = scene.cylinders.length;
         sceneData[2] = scene.boxes.length; // 직육면체 개수 추가
         sceneData[3] = scene.planes.length;  // Plane 개수 추가
+        sceneData[4] = scene.circles.length; // Circle 개수 추가
+        sceneData[5] = scene.ellipses.length; // Ellipse 개수 추가
+        sceneData[6] = scene.lines.length; // Line 개수 추가
+        sceneData[7] = scene.toruses.length; // Torus 개수 추가
 
         // 2. Write sphere data
         let offset = headerSize;
@@ -225,6 +281,94 @@ export class Renderer {
             sceneData[offset + 18] = plane.color[2];
             sceneData[offset + 19] = plane.material.type;
             offset += planeStride;
+        }
+
+        // Circle 데이터 패킹
+        for (const circle of scene.circles) {
+            sceneData[offset + 0] = circle.center[0];
+            sceneData[offset + 1] = circle.center[1];
+            sceneData[offset + 2] = circle.center[2];
+            sceneData[offset + 3] = circle.radius;
+            sceneData[offset + 4] = circle.normal[0];
+            sceneData[offset + 5] = circle.normal[1];
+            sceneData[offset + 6] = circle.normal[2];
+            sceneData[offset + 7] = 0; // padding
+            sceneData[offset + 8] = circle.color[0];
+            sceneData[offset + 9] = circle.color[1];
+            sceneData[offset + 10] = circle.color[2];
+            sceneData[offset + 11] = circle.material.type;
+            offset += circleStride;
+        }
+
+        // Ellipse 데이터 패킹
+        for (const ellipse of scene.ellipses) {
+            sceneData[offset + 0] = ellipse.center[0];
+            sceneData[offset + 1] = ellipse.center[1];
+            sceneData[offset + 2] = ellipse.center[2];
+            sceneData[offset + 3] = 0; // padding
+            sceneData[offset + 4] = ellipse.radiusA;
+            sceneData[offset + 5] = ellipse.radiusB;
+            sceneData[offset + 6] = 0; // padding
+            sceneData[offset + 7] = 0; // padding
+            sceneData[offset + 8] = ellipse.normal[0];
+            sceneData[offset + 9] = ellipse.normal[1];
+            sceneData[offset + 10] = ellipse.normal[2];
+            sceneData[offset + 11] = 0; // padding
+            sceneData[offset + 12] = ellipse.rotation[0];
+            sceneData[offset + 13] = ellipse.rotation[1];
+            sceneData[offset + 14] = ellipse.rotation[2];
+            sceneData[offset + 15] = 0; // padding
+            sceneData[offset + 16] = ellipse.color[0];
+            sceneData[offset + 17] = ellipse.color[1];
+            sceneData[offset + 18] = ellipse.color[2];
+            sceneData[offset + 19] = ellipse.material.type;
+            offset += ellipseStride;
+        }
+
+        // Line 데이터 패킹
+        for (const line of scene.lines) {
+            sceneData[offset + 0] = line.start[0];
+            sceneData[offset + 1] = line.start[1];
+            sceneData[offset + 2] = line.start[2];
+            sceneData[offset + 3] = 0; // padding
+            sceneData[offset + 4] = line.end[0];
+            sceneData[offset + 5] = line.end[1];
+            sceneData[offset + 6] = line.end[2];
+            sceneData[offset + 7] = line.thickness;
+            sceneData[offset + 8] = line.color[0];
+            sceneData[offset + 9] = line.color[1];
+            sceneData[offset + 10] = line.color[2];
+            sceneData[offset + 11] = line.material.type;
+            sceneData[offset + 12] = 0; // padding
+            sceneData[offset + 13] = 0; // padding
+            sceneData[offset + 14] = 0; // padding
+            sceneData[offset + 15] = 0; // padding
+            offset += lineStride;
+        }
+
+        // Torus 데이터 패킹
+        for (const torus of scene.toruses) {
+            sceneData[offset + 0] = torus.center[0];
+            sceneData[offset + 1] = torus.center[1];
+            sceneData[offset + 2] = torus.center[2];
+            sceneData[offset + 3] = 0; // padding
+            sceneData[offset + 4] = torus.rotation[0];
+            sceneData[offset + 5] = torus.rotation[1];
+            sceneData[offset + 6] = torus.rotation[2];
+            sceneData[offset + 7] = 0; // padding
+            sceneData[offset + 8] = torus.majorRadius;
+            sceneData[offset + 9] = torus.minorRadius;
+            sceneData[offset + 10] = torus.degree;
+            sceneData[offset + 11] = 0; // padding
+            sceneData[offset + 12] = torus.color[0];
+            sceneData[offset + 13] = torus.color[1];
+            sceneData[offset + 14] = torus.color[2];
+            sceneData[offset + 15] = torus.material.type;
+            sceneData[offset + 16] = 0; // padding
+            sceneData[offset + 17] = 0; // padding
+            sceneData[offset + 18] = 0; // padding
+            sceneData[offset + 19] = 0; // padding
+            offset += torusStride;
         }
 
         // Create a storage buffer for the scene data

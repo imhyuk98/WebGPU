@@ -43,6 +43,55 @@ struct Plane {
     padding5: f32,
 }
 
+struct Circle {
+    center: vec3<f32>,
+    radius: f32,
+    normal: vec3<f32>,    // 원이 놓인 평면의 법선
+    padding1: f32,
+    color: vec3<f32>,
+    materialType: i32,
+    padding2: f32,
+}
+
+struct Ellipse {
+    center: vec3<f32>,
+    padding1: f32,
+    radiusA: f32,         // 장축 반지름
+    radiusB: f32,         // 단축 반지름
+    padding2: vec2<f32>,
+    normal: vec3<f32>,    // 타원이 놓인 평면의 법선
+    padding3: f32,
+    rotation: vec3<f32>,  // 타원의 회전 각도
+    padding4: f32,
+    color: vec3<f32>,
+    materialType: i32,
+    padding5: f32,
+}
+
+struct Line {
+    start: vec3<f32>,     // 선의 시작점
+    padding1: f32,
+    end: vec3<f32>,       // 선의 끝점
+    thickness: f32,       // 선의 두께
+    color: vec3<f32>,     // 색상
+    materialType: i32,    // 재질 타입
+    padding2: vec4<f32>,  // 16바이트 정렬을 위한 패딩
+}
+
+struct Torus {
+    center: vec3<f32>,      // 토러스 중심점
+    padding1: f32,
+    rotation: vec3<f32>,    // 회전 각도
+    padding2: f32,
+    majorRadius: f32,       // 주반지름 (R1)
+    minorRadius: f32,       // 부반지름 (r1)
+    degree: f32,            // 각도 (0~360도)
+    padding3: f32,
+    color: vec3<f32>,       // 색상
+    materialType: i32,      // 재질 타입
+    padding4: vec4<f32>,    // 16바이트 정렬을 위한 패딩
+}
+
 struct Ray {
     origin: vec3<f32>,
     direction: vec3<f32>,

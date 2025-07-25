@@ -138,6 +138,74 @@ fn trace(r: Ray) -> vec3<f32> {
             }
         }
 
+        // Circle 검사 추가
+        let num_circles = get_num_circles();
+        for (var i = 0u; i < num_circles; i = i + 1u) {
+            let circle = get_circle(i);
+            let t_circle = ray_circle_intersect(current_ray, circle);
+
+            if (t_circle > 0.0 && t_circle < closest_hit.t) {
+                closest_hit.t = t_circle;
+                let hit_point = current_ray.origin + current_ray.direction * t_circle;
+                var circle_normal = calculate_circle_normal(circle, hit_point);
+                
+                closest_hit.normal = circle_normal;
+                closest_hit.color = circle.color;
+                closest_hit.materialType = circle.materialType;
+            }
+        }
+
+        // Ellipse 검사 추가
+        let num_ellipses = get_num_ellipses();
+        for (var i = 0u; i < num_ellipses; i = i + 1u) {
+            let ellipse = get_ellipse(i);
+            let t_ellipse = ray_ellipse_intersect(current_ray, ellipse);
+
+            if (t_ellipse > 0.0 && t_ellipse < closest_hit.t) {
+                closest_hit.t = t_ellipse;
+                let hit_point = current_ray.origin + current_ray.direction * t_ellipse;
+                var ellipse_normal = calculate_ellipse_normal(ellipse, hit_point);
+                
+                closest_hit.normal = ellipse_normal;
+                closest_hit.color = ellipse.color;
+                closest_hit.materialType = ellipse.materialType;
+            }
+        }
+
+        // Line 검사 추가
+        let num_lines = get_num_lines();
+        for (var i = 0u; i < num_lines; i = i + 1u) {
+            let line = get_line(i);
+            let t_line = ray_line_intersect(current_ray, line);
+
+            if (t_line > 0.0 && t_line < closest_hit.t) {
+                closest_hit.t = t_line;
+                let hit_point = current_ray.origin + current_ray.direction * t_line;
+                var line_normal = calculate_line_normal(line, hit_point);
+                
+                closest_hit.normal = line_normal;
+                closest_hit.color = line.color;
+                closest_hit.materialType = line.materialType;
+            }
+        }
+
+        // Torus 검사 추가
+        let num_toruses = get_num_toruses();
+        for (var i = 0u; i < num_toruses; i = i + 1u) {
+            let torus = get_torus(i);
+            let t_torus = ray_torus_intersect(current_ray, torus);
+
+            if (t_torus > 0.0 && t_torus < closest_hit.t) {
+                closest_hit.t = t_torus;
+                let hit_point = current_ray.origin + current_ray.direction * t_torus;
+                var torus_normal = calculate_torus_normal(torus, hit_point);
+                
+                closest_hit.normal = torus_normal;
+                closest_hit.color = torus.color;
+                closest_hit.materialType = torus.materialType;
+            }
+        }
+
         // 교차점이 있는지 확인
         if (closest_hit.t < 100000.0) {
             let hit_point = current_ray.origin + current_ray.direction * closest_hit.t;

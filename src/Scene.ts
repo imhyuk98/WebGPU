@@ -1,4 +1,4 @@
-import { Scene, Sphere, Cylinder, Box, Plane, Circle, Ellipse, Line, Torus } from "./renderer";
+import { Scene, Sphere, Cylinder, Box, Plane, Circle, Ellipse, Line } from "./renderer";
 import { Material, MaterialType, MaterialTemplates } from "./material";
 
 // --- Helper Functions ---
@@ -28,8 +28,7 @@ export function createBasicScene(): Scene {
         planes: [],
         circles: [],
         ellipses: [],
-        lines: [],
-        toruses: []
+        lines: []
     };
 
     // 바닥 평면
@@ -73,8 +72,7 @@ export function createRandomScene(): Scene {
         planes: [],
         circles: [],
         ellipses: [],
-        lines: [],
-        toruses: []
+        lines: []
     };
 
     // 바닥 구
@@ -171,8 +169,7 @@ export function createMixedScene(): Scene {
         planes: [],
         circles: [],
         ellipses: [],
-        lines: [],
-        toruses: []
+        lines: []
     };
 
     // 바닥 평면
@@ -230,8 +227,7 @@ export function createShowcaseScene(): Scene {
         planes: [],
         circles: [],
         ellipses: [],
-        lines: [],
-        toruses: []
+        lines: []
     };
 
     // 🏠 바닥 평면 (회색) - 카메라 앞쪽 아래에 배치
@@ -310,17 +306,6 @@ export function createShowcaseScene(): Scene {
         material: MaterialTemplates.MATTE
     });
 
-    // 🍩 Torus (토러스) - Line 옆에 추가
-    scene.toruses.push({
-        center: [16, 0, -8], // Line 옆 (x=16)
-        rotation: [Math.PI/2, 0, 0], // X축 중심으로 90도 회전 (세워서 보이게)
-        majorRadius: 1.2,    // 주반지름 (도넛 중심에서 튜브 중심까지)
-        minorRadius: 0.4,    // 부반지름 (튜브 반지름)
-        degree: 270,         // 3/4 토러스 (270도)
-        color: [0.8, 0.2, 0.8], // 자주색
-        material: MaterialTemplates.MIRROR
-    });
-
     return scene;
 }
 
@@ -333,8 +318,7 @@ export function createMetalTestScene(): Scene {
         planes: [],
         circles: [],
         ellipses: [],
-        lines: [],
-        toruses: []
+        lines: []
     };
 
     // 바닥 평면 (무광 회색)

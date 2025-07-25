@@ -78,20 +78,6 @@ struct Line {
     padding2: vec4<f32>,  // 16바이트 정렬을 위한 패딩
 }
 
-struct Torus {
-    center: vec3<f32>,      // 토러스 중심점
-    padding1: f32,
-    rotation: vec3<f32>,    // 회전 각도
-    padding2: f32,
-    majorRadius: f32,       // 주반지름 (R1)
-    minorRadius: f32,       // 부반지름 (r1)
-    degree: f32,            // 각도 (0~360도)
-    padding3: f32,
-    color: vec3<f32>,       // 색상
-    materialType: i32,      // 재질 타입
-    padding4: vec4<f32>,    // 16바이트 정렬을 위한 패딩
-}
-
 struct Ray {
     origin: vec3<f32>,
     direction: vec3<f32>,

@@ -477,3 +477,109 @@ fn calculate_line_normal(line: Line, hit_point: vec3<f32>) -> vec3<f32> {
     // 기본 법선 (위쪽 방향)
     return vec3<f32>(0.0, 1.0, 0.0);
 }
+
+// Torus SDF (Signed Distance Function) - 뚜껑 없는 열린 도넛
+fn torus_sdf(p: vec3<f32>, torus: Torus) -> f32 {
+    // 토러스 중심으로 이동
+    var pos = p - torus.center;
+    
+    // 회전 적용 (역회전)
+    let rot_x = rotation_matrix_x(-torus.rotation.x);
+    let rot_y = rotation_matrix_y(-torus.rotation.y);
+    let rot_z = rotation_matrix_z(-torus.rotation.z);
+    let rotation_matrix = rot_z * rot_y * rot_x;
+    pos = rotation_matrix * pos;
+    
+    // 표준 토러스 SDF 계산 (뚜껑 없는 완전한 도넛 형태)
+    let q = vec2<f32>(length(vec2<f32>(pos.x, pos.z)) - torus.majorRadius, pos.y);
+    return length(q) - torus.minorRadius;
+}
+
+// 토러스 각도 체크 함수
+fn is_point_in_torus_angle_range(point: vec3<f32>, torus: Torus) -> bool {
+    // 토러스 중심으로 이동
+    var pos = point - torus.center;
+    
+    // 회전 적용 (역회전)
+    let rot_x = rotation_matrix_x(-torus.rotation.x);
+    let rot_y = rotation_matrix_y(-torus.rotation.y);
+    let rot_z = rotation_matrix_z(-torus.rotation.z);
+    let rotation_matrix = rot_z * rot_y * rot_x;
+    pos = rotation_matrix * pos;
+    
+    // XZ 평면에서의 각도 계산
+    let angle = atan2(pos.z, pos.x);
+    
+    // 각도를 0~2π 범위로 정규화
+    var normalized_angle = angle;
+    if (normalized_angle < 0.0) {
+        normalized_angle = normalized_angle + 2.0 * 3.14159265359;
+    }
+    
+    // 시작/끝 각도 범위 체크
+    var start_angle = torus.startAngle;
+    var end_angle = torus.endAngle;
+    
+    // 각도 범위가 2π를 넘나드는 경우 처리
+    if (end_angle < start_angle) {
+        return normalized_angle >= start_angle || normalized_angle <= end_angle;
+    } else {
+        return normalized_angle >= start_angle && normalized_angle <= end_angle;
+    }
+}
+
+// Ray-Torus intersection using sphere tracing (SDF-based ray marching)
+fn ray_torus_intersect(ray: Ray, torus: Torus) -> f32 {
+    let max_steps = 128;
+    let min_distance = 0.001;
+    var t = ray.t_min;
+    
+    for (var i = 0; i < max_steps; i = i + 1) {
+        if (t > ray.t_max) {
+            break;
+        }
+        
+        let current_pos = ray.origin + ray.direction * t;
+        let distance = torus_sdf(current_pos, torus);
+        
+        // 표면에 충분히 가까워졌으면 각도 체크
+        if (abs(distance) < min_distance) {  // abs()로 내부/외부 모두 처리
+            // 각도 범위 내에 있는지 확인
+            if (is_point_in_torus_angle_range(current_pos, torus)) {
+                return t;
+            } else {
+                // 각도 범위 밖이면 계속 진행
+                t = t + min_distance * 3.0;
+                continue;
+            }
+        }
+        
+        // 거리만큼 전진 (절댓값 사용으로 내부에서도 진행)
+        t = t + max(abs(distance), min_distance * 0.5);
+    }
+    
+    return -1.0; // 교차하지 않음
+}
+
+// Torus 법선 계산 (SDF gradient 이용)
+fn calculate_torus_normal(torus: Torus, hit_point: vec3<f32>) -> vec3<f32> {
+    let epsilon = 0.0001;  // 더 작은 epsilon으로 정확도 향상
+    
+    // 그라디언트 계산 (중앙 차분법)
+    let dx = torus_sdf(hit_point + vec3<f32>(epsilon, 0.0, 0.0), torus) - 
+             torus_sdf(hit_point - vec3<f32>(epsilon, 0.0, 0.0), torus);
+    let dy = torus_sdf(hit_point + vec3<f32>(0.0, epsilon, 0.0), torus) - 
+             torus_sdf(hit_point - vec3<f32>(0.0, epsilon, 0.0), torus);
+    let dz = torus_sdf(hit_point + vec3<f32>(0.0, 0.0, epsilon), torus) - 
+             torus_sdf(hit_point - vec3<f32>(0.0, 0.0, epsilon), torus);
+    
+    let gradient = vec3<f32>(dx, dy, dz) / (2.0 * epsilon);
+    let len = length(gradient);
+    
+    if (len > 0.0001) {
+        return gradient / len;
+    } else {
+        // 안전한 기본 법선 반환
+        return vec3<f32>(0.0, 1.0, 0.0);
+    }
+}

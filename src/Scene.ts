@@ -1,4 +1,4 @@
-import { Scene, Sphere, Cylinder, Box, Plane, Circle, Ellipse, Line } from "./renderer";
+import { Scene, Sphere, Cylinder, Box, Plane, Circle, Ellipse, Line, Torus, TorusInput } from "./renderer";
 import { Material, MaterialType, MaterialTemplates } from "./material";
 
 // --- Helper Functions ---
@@ -18,6 +18,51 @@ function normalize(v: [number, number, number]): [number, number, number] {
     return [0, 0, 0];
 }
 
+// 도를 라디안으로 변환
+function degToRad(degrees: number): number {
+    return degrees * Math.PI / 180;
+}
+
+// TorusInput을 Torus로 변환 (도 → 라디안)
+function convertTorusInput(input: TorusInput): Torus {
+    let startAngle: number;
+    let endAngle: number;
+
+    // 새로운 방식: sweepAngle만 사용 (항상 0도부터 시작)
+    if (input.sweepAngleDegree !== undefined) {
+        const sweepRad = degToRad(input.sweepAngleDegree);
+        
+        startAngle = 0;  // 항상 +X축(0도)부터 시작
+        endAngle = sweepRad;  // sweepAngle만큼 그리기
+    }
+    // 기존 방식 1: 라디안이 직접 지정
+    else if (input.startAngle !== undefined && input.endAngle !== undefined) {
+        startAngle = input.startAngle;
+        endAngle = input.endAngle;
+    }
+    // 기존 방식 2: degree로 지정
+    else if (input.startAngleDegree !== undefined && input.endAngleDegree !== undefined) {
+        startAngle = degToRad(input.startAngleDegree);
+        endAngle = degToRad(input.endAngleDegree);
+    }
+    // 기본값: 완전한 도넛 (360도)
+    else {
+        startAngle = 0;
+        endAngle = degToRad(360);
+    }
+
+    return {
+        center: input.center,
+        rotation: input.rotation || [0, 0, 0],
+        majorRadius: input.majorRadius,
+        minorRadius: input.minorRadius,
+        startAngle,
+        endAngle,
+        color: input.color,
+        material: input.material
+    };
+}
+
 // --- Scene Creation Functions ---
 
 export function createBasicScene(): Scene {
@@ -28,7 +73,8 @@ export function createBasicScene(): Scene {
         planes: [],
         circles: [],
         ellipses: [],
-        lines: []
+        lines: [],
+        toruses: []
     };
 
     // 바닥 평면
@@ -72,7 +118,8 @@ export function createRandomScene(): Scene {
         planes: [],
         circles: [],
         ellipses: [],
-        lines: []
+        lines: [],
+        toruses: []
     };
 
     // 바닥 구
@@ -169,7 +216,8 @@ export function createMixedScene(): Scene {
         planes: [],
         circles: [],
         ellipses: [],
-        lines: []
+        lines: [],
+        toruses: []
     };
 
     // 바닥 평면
@@ -227,7 +275,8 @@ export function createShowcaseScene(): Scene {
         planes: [],
         circles: [],
         ellipses: [],
-        lines: []
+        lines: [],
+        toruses: []
     };
 
     // 🏠 바닥 평면 (회색) - 카메라 앞쪽 아래에 배치
@@ -306,6 +355,42 @@ export function createShowcaseScene(): Scene {
         material: MaterialTemplates.MATTE
     });
 
+    // 🟣 Torus (토러스) - 반원 도넛 (단순한 방식)
+    const torusInput1: TorusInput = {
+        center: [16, 0, -8],
+        rotation: [Math.PI/4, 0, Math.PI/6], // 토러스 자체를 기울임
+        majorRadius: 1.0,
+        minorRadius: 0.3,
+        sweepAngleDegree: 180,    // 🔥 180도만 그리기 (0도부터)
+        color: [0.8, 0.2, 0.8],
+        material: MaterialTemplates.MIRROR
+    };
+    scene.toruses.push(convertTorusInput(torusInput1));
+
+    // 🔸 1/4 토러스 (단순한 방식)
+    const torusInput2: TorusInput = {
+        center: [18, 0, -8],
+        rotation: [0, 0, 0],      // 회전 없음
+        majorRadius: 0.8,
+        minorRadius: 0.2,
+        sweepAngleDegree: 90,     // 🔥 90도만 그리기 (0도부터)
+        color: [0.2, 0.8, 0.8],
+        material: MaterialTemplates.MATTE
+    };
+    scene.toruses.push(convertTorusInput(torusInput2));
+
+    // 🔹 3/4 토러스 - rotation으로 시작 방향 조정 (단순한 방식)
+    const torusInput3: TorusInput = {
+        center: [20, 0, -8],
+        rotation: [0, 0, Math.PI/4], // Z축 중심으로 45도 회전 (시작점이 45도가 됨)
+        majorRadius: 0.6,
+        minorRadius: 0.15,
+        sweepAngleDegree: 270,    // 🔥 270도 그리기 (45도부터 시작하는 효과)
+        color: [1.0, 0.8, 0.2],
+        material: MaterialTemplates.MIRROR
+    };
+    scene.toruses.push(convertTorusInput(torusInput3));
+
     return scene;
 }
 
@@ -318,7 +403,8 @@ export function createMetalTestScene(): Scene {
         planes: [],
         circles: [],
         ellipses: [],
-        lines: []
+        lines: [],
+        toruses: []
     };
 
     // 바닥 평면 (무광 회색)

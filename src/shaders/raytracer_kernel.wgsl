@@ -189,6 +189,23 @@ fn trace(r: Ray) -> vec3<f32> {
             }
         }
 
+        // Torus 검사 추가
+        let num_toruses = get_num_toruses();
+        for (var i = 0u; i < num_toruses; i = i + 1u) {
+            let torus = get_torus(i);
+            let t_torus = ray_torus_intersect(current_ray, torus);
+
+            if (t_torus > 0.0 && t_torus < closest_hit.t) {
+                closest_hit.t = t_torus;
+                let hit_point = current_ray.origin + current_ray.direction * t_torus;
+                var torus_normal = calculate_torus_normal(torus, hit_point);
+                
+                closest_hit.normal = torus_normal;
+                closest_hit.color = torus.color;
+                closest_hit.materialType = torus.materialType;
+            }
+        }
+
         // 교차점이 있는지 확인
         if (closest_hit.t < 100000.0) {
             let hit_point = current_ray.origin + current_ray.direction * closest_hit.t;

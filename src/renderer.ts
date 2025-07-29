@@ -4,19 +4,12 @@ import intersections_shader from "./shaders/intersections.wgsl"
 import raytracer_kernel from "./shaders/raytracer_kernel.wgsl"
 import screen_shader from "./shaders/screen_shader.wgsl"
 import { Material, MaterialType, MaterialTemplates } from "./material";
-
-// Helper types and functions for vector math
-type vec3 = [number, number, number];
-
-const vec3 = (x: number, y: number, z: number): vec3 => [x, y, z];
-const add = (a: vec3, b: vec3): vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-const subtract = (a: vec3, b: vec3): vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-const scale = (a: vec3, s: number): vec3 => [a[0] * s, a[1] * s, a[2] * s];
-const length = (a: vec3): number => Math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
-const normalize = (a: vec3): vec3 => {
-    const l = length(a);
-    return l > 0 ? scale(a, 1 / l) : vec3(0, 0, 0);
-};
+import { 
+    vec3, add, subtract, scale, length, normalize, cross,
+    createFrustum, sphereInFrustum, Frustum, BoundingSphere,
+    getBoundingSphereForSphere, getBoundingSphereForBox, 
+    getBoundingSphereForCylinder, getBoundingSphereForTorus
+} from "./utils";
 
 // Data structures for scene objects
 export interface Sphere {
@@ -154,6 +147,12 @@ export class Renderer {
     // Uniforms
     uniform_buffer: GPUBuffer; // 렌더링 설정값들 저장
     camera_buffer: GPUBuffer; // 카메라 정보 저장 (위치, 방향 등)
+    
+    // Frustum Culling
+    enableFrustumCulling: boolean = true; // Frustum Culling 활성화 여부
+    originalScene: Scene; // 원본 Scene 저장
+    sceneBuffer: GPUBuffer; // Scene 버퍼를 재사용하기 위해 저장
+    ray_tracing_bind_group_layout: GPUBindGroupLayout; // BindGroup 레이아웃 저장
 
     // canvas 연결
     constructor(canvas: HTMLCanvasElement){
@@ -162,6 +161,9 @@ export class Renderer {
 
    // Initialize now takes a Scene object
    async Initialize(scene: Scene) {
+
+        // 원본 Scene 저장 (Frustum Culling용)
+        this.originalScene = scene;
 
         await this.setupDevice();
 
@@ -397,11 +399,11 @@ export class Renderer {
         }
 
         // Create a storage buffer for the scene data
-        const sceneBuffer = this.device.createBuffer({
-            size: sceneData.byteLength,
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, // STORAGE : Compute shader에서 읽기/쓰기 가능, COPY_DST : CPU에서 GPU로 데이터 복사 가능
+        this.sceneBuffer = this.device.createBuffer({
+            size: Math.max(sceneData.byteLength, 1024 * 1024), // 최소 1MB로 설정
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
-        this.device.queue.writeBuffer(sceneBuffer, 0, sceneData); // CPU 메모리의 sceneData 배열을 GPU 메모리의 sceneBuffer로 복사. 이 시점에서 구와 실린더 정보가 GPU에 저장됨
+        this.device.queue.writeBuffer(this.sceneBuffer, 0, sceneData);
 
         // --- Camera Buffer ---
         this.camera_buffer = this.device.createBuffer({
@@ -427,7 +429,7 @@ export class Renderer {
             ${raytracer_kernel}
         `;
 
-        const ray_tracing_bind_group_layout = this.device.createBindGroupLayout({
+        this.ray_tracing_bind_group_layout = this.device.createBindGroupLayout({
             entries: [
                 {
                     binding: 0,
@@ -457,7 +459,7 @@ export class Renderer {
         });
     
         this.ray_tracing_bind_group = this.device.createBindGroup({
-            layout: ray_tracing_bind_group_layout,
+            layout: this.ray_tracing_bind_group_layout,
             entries: [
                 {
                     binding: 0,
@@ -465,7 +467,7 @@ export class Renderer {
                 },
                 {
                     binding: 1,
-                    resource: { buffer: sceneBuffer }
+                    resource: { buffer: this.sceneBuffer }
                 },
                 {
                     binding: 2,
@@ -479,7 +481,7 @@ export class Renderer {
         });
         
         const ray_tracing_pipeline_layout = this.device.createPipelineLayout({
-            bindGroupLayouts: [ray_tracing_bind_group_layout]
+            bindGroupLayouts: [this.ray_tracing_bind_group_layout]
         });
 
         this.ray_tracing_pipeline = this.device.createComputePipeline({
@@ -583,7 +585,377 @@ export class Renderer {
         this.sampler = this.device.createSampler(samplerDescriptor);
     }
 
+    // Frustum Culling을 적용하여 필터링된 Scene 생성
+    performFrustumCulling(
+        cameraPos: vec3, 
+        lookAt: vec3, 
+        up: vec3, 
+        fov: number, 
+        aspectRatio: number
+    ): Scene {
+        if (!this.enableFrustumCulling) {
+            return this.originalScene;
+        }
+
+        // Frustum 생성 (nearPlane과 farPlane은 적절히 설정)
+        const nearPlane = 0.1;
+        const farPlane = 1000.0;
+        const frustum = createFrustum(cameraPos, lookAt, up, fov, aspectRatio, nearPlane, farPlane);
+
+        const culledScene: Scene = {
+            spheres: [],
+            cylinders: [],
+            boxes: [],
+            planes: [],
+            circles: [],
+            ellipses: [],
+            lines: [],
+            toruses: []
+        };
+
+        let totalObjects = 0;
+        let culledObjects = 0;
+
+        // Sphere Culling
+        for (const sphere of this.originalScene.spheres) {
+            totalObjects++;
+            const boundingSphere = getBoundingSphereForSphere(sphere.center, sphere.radius);
+            if (sphereInFrustum(boundingSphere, frustum)) {
+                culledScene.spheres.push(sphere);
+            } else {
+                culledObjects++;
+            }
+        }
+
+        // Cylinder Culling
+        for (const cylinder of this.originalScene.cylinders) {
+            totalObjects++;
+            const boundingSphere = getBoundingSphereForCylinder(cylinder.center, cylinder.radius, cylinder.height);
+            if (sphereInFrustum(boundingSphere, frustum)) {
+                culledScene.cylinders.push(cylinder);
+            } else {
+                culledObjects++;
+            }
+        }
+
+        // Box Culling
+        for (const box of this.originalScene.boxes) {
+            totalObjects++;
+            const boundingSphere = getBoundingSphereForBox(box.center, box.size);
+            if (sphereInFrustum(boundingSphere, frustum)) {
+                culledScene.boxes.push(box);
+            } else {
+                culledObjects++;
+            }
+        }
+
+        // Plane Culling (평면은 보통 매우 크므로 보수적으로 처리)
+        for (const plane of this.originalScene.planes) {
+            totalObjects++;
+            // 평면의 크기를 고려한 bounding sphere
+            const maxSize = Math.max(plane.size[0], plane.size[1]);
+            const boundingSphere = getBoundingSphereForSphere(plane.center, maxSize);
+            if (sphereInFrustum(boundingSphere, frustum)) {
+                culledScene.planes.push(plane);
+            } else {
+                culledObjects++;
+            }
+        }
+
+        // Circle Culling
+        for (const circle of this.originalScene.circles) {
+            totalObjects++;
+            const boundingSphere = getBoundingSphereForSphere(circle.center, circle.radius);
+            if (sphereInFrustum(boundingSphere, frustum)) {
+                culledScene.circles.push(circle);
+            } else {
+                culledObjects++;
+            }
+        }
+
+        // Ellipse Culling
+        for (const ellipse of this.originalScene.ellipses) {
+            totalObjects++;
+            const maxRadius = Math.max(ellipse.radiusA, ellipse.radiusB);
+            const boundingSphere = getBoundingSphereForSphere(ellipse.center, maxRadius);
+            if (sphereInFrustum(boundingSphere, frustum)) {
+                culledScene.ellipses.push(ellipse);
+            } else {
+                culledObjects++;
+            }
+        }
+
+        // Line Culling
+        for (const line of this.originalScene.lines) {
+            totalObjects++;
+            // 선의 중점과 길이로 bounding sphere 계산
+            const midpoint: vec3 = [
+                (line.start[0] + line.end[0]) / 2,
+                (line.start[1] + line.end[1]) / 2,
+                (line.start[2] + line.end[2]) / 2
+            ];
+            const lineLength = length(subtract(line.end, line.start));
+            const boundingSphere = getBoundingSphereForSphere(midpoint, lineLength / 2);
+            if (sphereInFrustum(boundingSphere, frustum)) {
+                culledScene.lines.push(line);
+            } else {
+                culledObjects++;
+            }
+        }
+
+        // Torus Culling
+        for (const torus of this.originalScene.toruses) {
+            totalObjects++;
+            const boundingSphere = getBoundingSphereForTorus(torus.center, torus.majorRadius, torus.minorRadius);
+            if (sphereInFrustum(boundingSphere, frustum)) {
+                culledScene.toruses.push(torus);
+            } else {
+                culledObjects++;
+            }
+        }
+
+        // 디버그 정보 출력 (매 프레임마다는 너무 많으니 가끔씩만)
+        if (Math.random() < 0.01) { // 1% 확률로 출력
+            console.log(`Frustum Culling: ${culledObjects}/${totalObjects} objects culled (${((culledObjects/totalObjects)*100).toFixed(1)}%)`);
+        }
+
+        return culledScene;
+    }
+
+    // Scene 데이터를 GPU 버퍼에 업데이트
+    updateSceneBuffer(scene: Scene) {
+        // Scene 데이터 패킹 (기존 makePipeline의 데이터 패킹 로직 사용)
+        const headerSize = 8;
+        const sphereStride = 8;
+        const cylinderStride = 12;
+        const boxStride = 16;
+        const planeStride = 20;
+        const circleStride = 12;
+        const ellipseStride = 20;
+        const lineStride = 16;
+        const torusStride = 16;
+
+        const totalSizeInFloats = headerSize + 
+                                  scene.spheres.length * sphereStride + 
+                                  scene.cylinders.length * cylinderStride + 
+                                  scene.boxes.length * boxStride + 
+                                  scene.planes.length * planeStride +
+                                  scene.circles.length * circleStride +
+                                  scene.ellipses.length * ellipseStride +
+                                  scene.lines.length * lineStride +
+                                  scene.toruses.length * torusStride;
+        const sceneData = new Float32Array(totalSizeInFloats);
+
+        // 헤더 작성
+        sceneData[0] = scene.spheres.length;
+        sceneData[1] = scene.cylinders.length;
+        sceneData[2] = scene.boxes.length;
+        sceneData[3] = scene.planes.length;
+        sceneData[4] = scene.circles.length;
+        sceneData[5] = scene.ellipses.length;
+        sceneData[6] = scene.lines.length;
+        sceneData[7] = scene.toruses.length;
+
+        // 데이터 패킹 (기존 로직과 동일)
+        let offset = headerSize;
+        
+        // Spheres
+        for (const sphere of scene.spheres) {
+            sceneData.set(sphere.center, offset);
+            sceneData[offset + 3] = sphere.radius;
+            sceneData.set(sphere.color, offset + 4);
+            sceneData[offset + 7] = sphere.material.type;
+            offset += sphereStride;
+        }
+
+        // Cylinders
+        for (const cylinder of scene.cylinders) {
+            const normalized_axis = normalize(cylinder.axis);
+            const half_height_vec = scale(normalized_axis, cylinder.height / 2);
+            const p1 = subtract(cylinder.center, half_height_vec);
+            const p2 = add(cylinder.center, half_height_vec);
+            
+            sceneData.set(p1, offset);
+            sceneData[offset + 3] = cylinder.radius;
+            sceneData.set(p2, offset + 4);
+            sceneData.set(cylinder.color, offset + 8);
+            sceneData[offset + 11] = cylinder.material.type;
+            offset += cylinderStride;
+        }
+
+        // Boxes
+        for (const box of scene.boxes) {
+            sceneData[offset + 0] = box.center[0];
+            sceneData[offset + 1] = box.center[1];
+            sceneData[offset + 2] = box.center[2];
+            sceneData[offset + 3] = 0;
+            sceneData[offset + 4] = box.size[0];
+            sceneData[offset + 5] = box.size[1];
+            sceneData[offset + 6] = box.size[2];
+            sceneData[offset + 7] = 0;
+            sceneData[offset + 8] = box.rotation[0];
+            sceneData[offset + 9] = box.rotation[1];
+            sceneData[offset + 10] = box.rotation[2];
+            sceneData[offset + 11] = 0;
+            sceneData[offset + 12] = box.color[0];
+            sceneData[offset + 13] = box.color[1];
+            sceneData[offset + 14] = box.color[2];
+            sceneData[offset + 15] = box.material.type;
+            offset += boxStride;
+        }
+
+        // Planes
+        for (const plane of scene.planes) {
+            sceneData[offset + 0] = plane.center[0];
+            sceneData[offset + 1] = plane.center[1];
+            sceneData[offset + 2] = plane.center[2];
+            sceneData[offset + 3] = 0;
+            sceneData[offset + 4] = plane.normal[0];
+            sceneData[offset + 5] = plane.normal[1];
+            sceneData[offset + 6] = plane.normal[2];
+            sceneData[offset + 7] = 0;
+            sceneData[offset + 8] = plane.size[0];
+            sceneData[offset + 9] = plane.size[1];
+            sceneData[offset + 10] = 0;
+            sceneData[offset + 11] = 0;
+            sceneData[offset + 12] = plane.rotation[0];
+            sceneData[offset + 13] = plane.rotation[1];
+            sceneData[offset + 14] = plane.rotation[2];
+            sceneData[offset + 15] = 0;
+            sceneData[offset + 16] = plane.color[0];
+            sceneData[offset + 17] = plane.color[1];
+            sceneData[offset + 18] = plane.color[2];
+            sceneData[offset + 19] = plane.material.type;
+            offset += planeStride;
+        }
+
+        // Circles
+        for (const circle of scene.circles) {
+            sceneData[offset + 0] = circle.center[0];
+            sceneData[offset + 1] = circle.center[1];
+            sceneData[offset + 2] = circle.center[2];
+            sceneData[offset + 3] = circle.radius;
+            sceneData[offset + 4] = circle.normal[0];
+            sceneData[offset + 5] = circle.normal[1];
+            sceneData[offset + 6] = circle.normal[2];
+            sceneData[offset + 7] = 0;
+            sceneData[offset + 8] = circle.color[0];
+            sceneData[offset + 9] = circle.color[1];
+            sceneData[offset + 10] = circle.color[2];
+            sceneData[offset + 11] = circle.material.type;
+            offset += circleStride;
+        }
+
+        // Ellipses
+        for (const ellipse of scene.ellipses) {
+            sceneData[offset + 0] = ellipse.center[0];
+            sceneData[offset + 1] = ellipse.center[1];
+            sceneData[offset + 2] = ellipse.center[2];
+            sceneData[offset + 3] = 0;
+            sceneData[offset + 4] = ellipse.radiusA;
+            sceneData[offset + 5] = ellipse.radiusB;
+            sceneData[offset + 6] = 0;
+            sceneData[offset + 7] = 0;
+            sceneData[offset + 8] = ellipse.normal[0];
+            sceneData[offset + 9] = ellipse.normal[1];
+            sceneData[offset + 10] = ellipse.normal[2];
+            sceneData[offset + 11] = 0;
+            sceneData[offset + 12] = ellipse.rotation[0];
+            sceneData[offset + 13] = ellipse.rotation[1];
+            sceneData[offset + 14] = ellipse.rotation[2];
+            sceneData[offset + 15] = 0;
+            sceneData[offset + 16] = ellipse.color[0];
+            sceneData[offset + 17] = ellipse.color[1];
+            sceneData[offset + 18] = ellipse.color[2];
+            sceneData[offset + 19] = ellipse.material.type;
+            offset += ellipseStride;
+        }
+
+        // Lines
+        for (const line of scene.lines) {
+            sceneData[offset + 0] = line.start[0];
+            sceneData[offset + 1] = line.start[1];
+            sceneData[offset + 2] = line.start[2];
+            sceneData[offset + 3] = 0;
+            sceneData[offset + 4] = line.end[0];
+            sceneData[offset + 5] = line.end[1];
+            sceneData[offset + 6] = line.end[2];
+            sceneData[offset + 7] = line.thickness;
+            sceneData[offset + 8] = line.color[0];
+            sceneData[offset + 9] = line.color[1];
+            sceneData[offset + 10] = line.color[2];
+            sceneData[offset + 11] = line.material.type;
+            sceneData[offset + 12] = 0;
+            sceneData[offset + 13] = 0;
+            sceneData[offset + 14] = 0;
+            sceneData[offset + 15] = 0;
+            offset += lineStride;
+        }
+
+        // Toruses
+        for (const torus of scene.toruses) {
+            sceneData[offset + 0] = torus.center[0];
+            sceneData[offset + 1] = torus.center[1];
+            sceneData[offset + 2] = torus.center[2];
+            sceneData[offset + 3] = 0;
+            sceneData[offset + 4] = torus.rotation[0];
+            sceneData[offset + 5] = torus.rotation[1];
+            sceneData[offset + 6] = torus.rotation[2];
+            sceneData[offset + 7] = 0;
+            sceneData[offset + 8] = torus.majorRadius;
+            sceneData[offset + 9] = torus.minorRadius;
+            sceneData[offset + 10] = torus.startAngle;
+            sceneData[offset + 11] = torus.endAngle;
+            sceneData[offset + 12] = torus.color[0];
+            sceneData[offset + 13] = torus.color[1];
+            sceneData[offset + 14] = torus.color[2];
+            sceneData[offset + 15] = torus.material.type;
+            offset += torusStride;
+        }
+
+        // 기존 버퍼가 충분히 크면 재사용, 아니면 새로 생성
+        if (!this.sceneBuffer || this.sceneBuffer.size < sceneData.byteLength) {
+            if (this.sceneBuffer) {
+                this.sceneBuffer.destroy();
+            }
+            this.sceneBuffer = this.device.createBuffer({
+                size: Math.max(sceneData.byteLength, 1024 * 1024), // 최소 1MB로 설정
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+            
+            // BindGroup 업데이트
+            this.ray_tracing_bind_group = this.device.createBindGroup({
+                layout: this.ray_tracing_bind_group_layout,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: this.color_buffer_view
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: this.sceneBuffer }
+                    },
+                    {
+                        binding: 2,
+                        resource: { buffer: this.uniform_buffer }
+                    },
+                    {
+                        binding: 3,
+                        resource: { buffer: this.camera_buffer }
+                    }
+                ]
+            });
+        }
+        
+        // 데이터 업데이트
+        this.device.queue.writeBuffer(this.sceneBuffer, 0, sceneData);
+    }
+
     render = (look_from: vec3, look_at: vec3, v_up: vec3, v_fov: number, aspect_ratio: number) => {
+
+        // --- Frustum Culling ---
+        const culledScene = this.performFrustumCulling(look_from, look_at, v_up, v_fov, aspect_ratio);
+        this.updateSceneBuffer(culledScene);
 
         // --- Camera Calculation ---
         const theta = v_fov * (Math.PI / 180.0);
@@ -609,7 +981,7 @@ export class Renderer {
         this.device.queue.writeBuffer(this.camera_buffer, 0, cameraData);
 
         // --- Update Uniforms ---
-        const samples_per_pixel = 16; // 100 → 16으로 성능 개선
+        const samples_per_pixel = 4; // 16 → 4으로 성능 개선 (다중 오브젝트용)
         const seed = Math.random() * 4294967295; // Random u32
         this.device.queue.writeBuffer(this.uniform_buffer, 0, new Uint32Array([samples_per_pixel, seed]));
 
@@ -643,9 +1015,4 @@ export class Renderer {
 
     }
     
-}
-
-// Helper function for cross product, needed for camera calculations
-function cross(a: vec3, b: vec3): vec3 {
-    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }

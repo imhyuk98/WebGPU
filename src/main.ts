@@ -14,6 +14,7 @@ class App {
 
     lastTime: number = 0;
     isRunning: boolean = false;
+    currentSceneType: SceneType = SceneType.TORUS_FIELD;
 
     constructor() {
         this.canvas = <HTMLCanvasElement> document.getElementById("gfx-main");
@@ -26,24 +27,84 @@ class App {
         this.controls = new Controls(this.canvas, this.camera);
 
         this.fpsCounter = new FPSCounter();
+        
+        // 키보드 이벤트 리스너 추가
+        this.setupKeyboardControls();
     }
 
     async initialize() {
         // 씬 생성 및 렌더러 초기화
-        const scene = createScene(SceneType.SHOWCASE);
+        const scene = createScene(this.currentSceneType);
         await this.renderer.Initialize(scene);
         
         // 애니메이션 루프 시작
         this.isRunning = true;
         this.lastTime = performance.now();
         this.gameLoop();
+    }
+
+    // 키보드 컨트롤 설정
+    setupKeyboardControls() {
+        document.addEventListener('keydown', (event) => {
+            switch(event.key) {
+                case '1':
+                    this.switchScene(SceneType.SHOWCASE);
+                    break;
+                case '2':
+                    this.switchScene(SceneType.TORUS_FIELD);
+                    break;
+                case '3':
+                    this.switchScene(SceneType.BASIC);
+                    break;
+                case '4':
+                    this.switchScene(SceneType.MIXED);
+                    break;
+                case '5':
+                    this.switchScene(SceneType.METAL_TEST);
+                    break;
+                case 'f':
+                case 'F':
+                    // Frustum Culling 토글
+                    this.renderer.enableFrustumCulling = !this.renderer.enableFrustumCulling;
+                    console.log(`Frustum Culling: ${this.renderer.enableFrustumCulling ? 'Enabled' : 'Disabled'}`);
+                    break;
+                default:
+                    return; // 다른 키는 무시
+            }
+            event.preventDefault();
+        });
         
-        console.log("🎮 조작법:");
-        console.log("- 캔버스 클릭: 마우스 잠금");
-        console.log("- WASD: 이동");
-        console.log("- Space/Shift: 위아래 이동");
-        console.log("- 마우스: 시점 회전");
-        console.log("- ESC: 마우스 잠금 해제");
+        // 사용법 안내
+        console.log("=== Scene Switching Controls ===");
+        console.log("1: Showcase Scene");
+        console.log("2: Torus Field (1000 toruses)");
+        console.log("3: Basic Scene");
+        console.log("4: Mixed Scene");
+        console.log("5: Metal Test Scene");
+        console.log("F: Toggle Frustum Culling");
+        console.log("================================");
+    }
+
+    // Scene 전환
+    async switchScene(newSceneType: SceneType) {
+        if (newSceneType === this.currentSceneType) {
+            return; // 같은 씬이면 무시
+        }
+
+        console.log(`Switching to ${newSceneType} scene...`);
+        this.currentSceneType = newSceneType;
+        
+        // 렌더링 일시정지
+        this.isRunning = false;
+        
+        // 새로운 씬 생성 및 렌더러 재초기화
+        const scene = createScene(newSceneType);
+        await this.renderer.Initialize(scene);
+        
+        // 렌더링 재시작
+        this.isRunning = true;
+        this.lastTime = performance.now();
+        this.gameLoop();
     }
 
     gameLoop() {

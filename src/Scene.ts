@@ -1,26 +1,14 @@
 import { Scene, Sphere, Cylinder, Box, Plane, Circle, Ellipse, Line, Torus, TorusInput } from "./renderer";
 import { Material, MaterialType, MaterialTemplates } from "./material";
+import { vec3, normalize, toRadians } from "./utils";
 
 // --- Helper Functions ---
 function random_double(min: number, max: number): number {
     return min + (max - min) * Math.random();
 }
 
-function random_vec3(min: number, max: number): [number, number, number] {
+function random_vec3(min: number, max: number): vec3 {
     return [random_double(min, max), random_double(min, max), random_double(min, max)];
-}
-
-function normalize(v: [number, number, number]): [number, number, number] {
-    const len = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
-    if (len > 0) {
-        return [v[0]/len, v[1]/len, v[2]/len];
-    }
-    return [0, 0, 0];
-}
-
-// 도를 라디안으로 변환
-function degToRad(degrees: number): number {
-    return degrees * Math.PI / 180;
 }
 
 // TorusInput을 Torus로 변환 (도 → 라디안)
@@ -30,7 +18,7 @@ function convertTorusInput(input: TorusInput): Torus {
 
     // 새로운 방식: sweepAngle만 사용 (항상 0도부터 시작)
     if (input.sweepAngleDegree !== undefined) {
-        const sweepRad = degToRad(input.sweepAngleDegree);
+        const sweepRad = toRadians(input.sweepAngleDegree);
         
         startAngle = 0;  // 항상 +X축(0도)부터 시작
         endAngle = sweepRad;  // sweepAngle만큼 그리기
@@ -42,13 +30,13 @@ function convertTorusInput(input: TorusInput): Torus {
     }
     // 기존 방식 2: degree로 지정
     else if (input.startAngleDegree !== undefined && input.endAngleDegree !== undefined) {
-        startAngle = degToRad(input.startAngleDegree);
-        endAngle = degToRad(input.endAngleDegree);
+        startAngle = toRadians(input.startAngleDegree);
+        endAngle = toRadians(input.endAngleDegree);
     }
     // 기본값: 완전한 도넛 (360도)
     else {
         startAngle = 0;
-        endAngle = degToRad(360);
+        endAngle = toRadians(360);
     }
 
     return {
@@ -283,15 +271,15 @@ export function createShowcaseScene(): Scene {
     scene.planes.push({
         center: [0, 10, -8],
         normal: [0, 0, 1],
-        size: [20, 20],
+        size: [80, 40], // 40x20 → 80x40 (훨씬 크게)
         rotation: [Math.PI/2, 0, 0],
-        color: [1.0, 1.0, 0.2], // ✅ color → color
+        color: [0.6, 0.4, 0.8], // 연한 보라색 (사용되지 않은 색상)
         material: MaterialTemplates.MATTE
     });
 
     // 🔴 Sphere (구) - 왼쪽
     scene.spheres.push({
-        center: [-4, 0, -8],
+        center: [-8, 0, -8], // -4 → -8 (더 멀리)
         radius: 1.0,
         color: [1.0, 0.2, 0.2], // ✅ color → color
         material: MaterialTemplates.MATTE
@@ -299,26 +287,26 @@ export function createShowcaseScene(): Scene {
 
     // 🟢 Cylinder (실린더) - 중앙 왼쪽
     scene.cylinders.push({
-        center: [-1, 0, -8],
+        center: [-4, 0, -8], // -1 → -4 (간격 넓힘)
         axis: [0, 1, 0],
         height: 2.0,
         radius: 0.6,
         color: [0.2, 1.0, 0.2], // ✅ color → color
-        material: MaterialTemplates.MIRROR
+        material: MaterialTemplates.MATTE
     });
 
     // 🔵 Box (박스) - 중앙 오른쪽
     scene.boxes.push({
-        center: [2, 0, -8],
+        center: [0, 0, -8], // 2 → 0 (중앙으로)
         size: [1.2, 1.2, 1.2],
         rotation: [0, Math.PI/4, Math.PI/6],
         color: [0.2, 0.2, 1.0], // ✅ color → color
-        material: MaterialTemplates.MIRROR // ✅ ROUGH_METAL → MIRROR
+        material: MaterialTemplates.MATTE // ✅ ROUGH_METAL → MIRROR
     });
 
     // 🟡 Plane (평면) - 오른쪽, 카메라를 향하도록
     scene.planes.push({
-        center: [5, 0, -8],
+        center: [4, 0, -8], // 5 → 4
         normal: [0, 0, 1],
         size: [2.5, 2.5],
         rotation: [0, 0, 0],
@@ -328,16 +316,16 @@ export function createShowcaseScene(): Scene {
 
     // 🟠 Circle (원) - 맨 오른쪽, sphere와 같은 높이 및 반지름
     scene.circles.push({
-        center: [8, 0, -8], // 다른 도형들과 같은 높이 (y=0), 맨 오른쪽 (x=8)
+        center: [8, 0, -8], // 그대로 유지
         radius: 1.0, // sphere와 같은 반지름
         normal: [0, 0, 1], // Z축을 향하도록 (카메라 쪽)
         color: [1.0, 0.5, 0.2], // 주황색
-        material: MaterialTemplates.MIRROR
+        material: MaterialTemplates.MATTE
     });
 
     // 🟡 Ellipse (타원) - Circle 옆에 추가
     scene.ellipses.push({
-        center: [12, 0, -8], // Circle에서 더 멀리 떨어뜨림 (x=10 → x=12)
+        center: [14, 0, -8], // 12 → 14 (더 멀리)
         radiusA: 1.5, // 장축 반지름 (가로)
         radiusB: 0.8, // 단축 반지름 (세로)
         normal: [0, 0, 1], // Z축을 향하도록 (카메라 쪽)
@@ -348,8 +336,8 @@ export function createShowcaseScene(): Scene {
 
     // 🟤 Line (선) - Ellipse 옆에 추가
     scene.lines.push({
-        start: [14, -1, -8], // Ellipse 옆에서 시작
-        end: [14, 1, -8],    // 위쪽으로 2 단위 길이
+        start: [18, -1, -8], // 14 → 18 (더 멀리)
+        end: [18, 1, -8],    // 위쪽으로 2 단위 길이
         thickness: 0.005,     // 훨씬 얇은 두께 (0.1 → 0.02)
         color: [0.6, 0.3, 0.1], // 갈색
         material: MaterialTemplates.MATTE
@@ -357,19 +345,19 @@ export function createShowcaseScene(): Scene {
 
     // 🟣 Torus (토러스) - 반원 도넛 (단순한 방식)
     const torusInput1: TorusInput = {
-        center: [16, 0, -8],
+        center: [22, 0, -8], // 16 → 22 (더 멀리)
         rotation: [Math.PI/4, 0, Math.PI/6], // 토러스 자체를 기울임
         majorRadius: 1.0,
         minorRadius: 0.3,
         sweepAngleDegree: 180,    // 🔥 180도만 그리기 (0도부터)
         color: [0.8, 0.2, 0.8],
-        material: MaterialTemplates.MIRROR
+        material: MaterialTemplates.MATTE
     };
     scene.toruses.push(convertTorusInput(torusInput1));
 
     // 🔸 1/4 토러스 (단순한 방식)
     const torusInput2: TorusInput = {
-        center: [18, 0, -8],
+        center: [26, 0, -8], // 18 → 26 (더 멀리)
         rotation: [0, 0, 0],      // 회전 없음
         majorRadius: 0.8,
         minorRadius: 0.2,
@@ -381,13 +369,13 @@ export function createShowcaseScene(): Scene {
 
     // 🔹 3/4 토러스 - rotation으로 시작 방향 조정 (단순한 방식)
     const torusInput3: TorusInput = {
-        center: [20, 0, -8],
+        center: [30, 0, -8], // 20 → 30 (더 멀리)
         rotation: [0, 0, Math.PI/4], // Z축 중심으로 45도 회전 (시작점이 45도가 됨)
         majorRadius: 0.6,
         minorRadius: 0.15,
         sweepAngleDegree: 270,    // 🔥 270도 그리기 (45도부터 시작하는 효과)
         color: [1.0, 0.8, 0.2],
-        material: MaterialTemplates.MIRROR
+        material: MaterialTemplates.MATTE
     };
     scene.toruses.push(convertTorusInput(torusInput3));
 
@@ -458,7 +446,9 @@ export enum SceneType {
     RANDOM = "random", 
     MIXED = "mixed",
     SHOWCASE = "showcase",
-    METAL_TEST = "metal_test"
+    METAL_TEST = "metal_test",
+    TORUS_FIELD = "torus_field",    // 1000개 토러스 (10x10x10)
+    TORUS_125 = "torus_125"         // 125개 토러스 (5x5x5)
 }
 
 // 메인 씬 생성 함수
@@ -474,7 +464,182 @@ export function createScene(type: SceneType = SceneType.BASIC): Scene {
             return createShowcaseScene();
         case SceneType.METAL_TEST:
             return createMetalTestScene();
+        case SceneType.TORUS_FIELD:
+            return createTorusFieldScene();
+        case SceneType.TORUS_125:
+            return createTorus125Scene();
         default:
             return createBasicScene();
     }
+}
+
+// 1000개의 토러스를 격자로 배치한 성능 테스트 Scene
+function createTorusFieldScene(): Scene {
+    console.log("Creating Torus Field Scene with 1000 toruses...");
+    
+    const toruses: TorusInput[] = [];
+    
+    // 10x10x10 = 1000개의 토러스를 격자로 배치
+    const gridSize = 10;
+    const spacing = 6; // 토러스 간 간격
+    const totalSize = (gridSize - 1) * spacing;
+    const offset = totalSize / 2; // 중앙 정렬
+    
+    // 다양한 색상 팔레트
+    const colors: vec3[] = [
+        [1.0, 0.2, 0.2], // 빨강
+        [0.2, 1.0, 0.2], // 초록
+        [0.2, 0.2, 1.0], // 파랑
+        [1.0, 1.0, 0.2], // 노랑
+        [1.0, 0.2, 1.0], // 마젠타
+        [0.2, 1.0, 1.0], // 시안
+        [1.0, 0.6, 0.2], // 주황
+        [0.6, 0.2, 1.0], // 보라
+        [0.2, 0.6, 1.0], // 하늘색
+        [1.0, 0.8, 0.6], // 베이지
+    ];
+    
+    // 재질은 MATTE만 사용 (통일성을 위해)
+    const material = MaterialTemplates.MATTE;
+    
+    let torusIndex = 0;
+    
+    for (let x = 0; x < gridSize; x++) {
+        for (let y = 0; y < gridSize; y++) {
+            for (let z = 0; z < gridSize; z++) {
+                // 위치 계산
+                const position: vec3 = [
+                    x * spacing - offset,
+                    y * spacing - offset,
+                    z * spacing - offset
+                ];
+                
+                // 색상과 재질을 인덱스 기반으로 선택
+                const colorIndex = torusIndex % colors.length;
+                
+                // 랜덤한 회전
+                const rotation: vec3 = [
+                    random_double(0, Math.PI * 2),
+                    random_double(0, Math.PI * 2),
+                    random_double(0, Math.PI * 2)
+                ];
+                
+                // 크기 변화를 위한 랜덤 값
+                const sizeVariation = random_double(0.8, 1.2);
+                
+                toruses.push({
+                    center: position,
+                    rotation: rotation,
+                    majorRadius: 1.5 * sizeVariation, // 주반지름
+                    minorRadius: 0.5 * sizeVariation, // 부반지름
+                    sweepAngleDegree: 360, // 완전한 도넛
+                    color: colors[colorIndex],
+                    material: material // 모두 MATTE 재질
+                });
+                
+                torusIndex++;
+            }
+        }
+    }
+    
+    console.log(`Created ${toruses.length} toruses in a ${gridSize}x${gridSize}x${gridSize} grid`);
+    
+    // 큰 바닥 평면 추가 (성능에 큰 영향 없음)
+    const planes: Plane[] = [
+        {
+            center: [0, -offset - 10, 0],
+            normal: [0, 1, 0],
+            size: [totalSize * 2, totalSize * 2],
+            rotation: [0, 0, 0],
+            color: [0.3, 0.3, 0.3],
+            material: MaterialTemplates.MATTE
+        }
+    ];
+    
+    return {
+        spheres: [],
+        cylinders: [],
+        boxes: [],
+        planes: planes,
+        circles: [],
+        ellipses: [],
+        lines: [],
+        toruses: toruses.map(convertTorusInput)
+    };
+}
+
+// 성능 최적화된 125개 토러스 Scene
+function createTorus125Scene(): Scene {
+    console.log("Creating Optimized Torus Scene (125 toruses)");
+    
+    const toruses: TorusInput[] = [];
+    
+    // 5x5x5 = 125개의 토러스를 격자로 배치 (최적화된 버전)
+    const gridSize = 5;
+    const spacing = 8; // 토러스 간 간격
+    const totalSize = (gridSize - 1) * spacing;
+    const offset = totalSize / 2; // 중앙 정렬
+    
+    // 더 간단한 색상 팔레트 (성능을 위해)
+    const colors: vec3[] = [
+        [1.0, 0.2, 0.2], // 빨강
+        [0.2, 1.0, 0.2], // 초록
+        [0.2, 0.2, 1.0], // 파랑
+        [1.0, 1.0, 0.2], // 노랑
+        [0.6, 0.6, 0.6], // 회색
+    ];
+    
+    // 재질은 MATTE만 사용 (성능을 위해)
+    const material = MaterialTemplates.MATTE;
+    
+    let torusIndex = 0;
+    
+    for (let x = 0; x < gridSize; x++) {
+        for (let y = 0; y < gridSize; y++) {
+            for (let z = 0; z < gridSize; z++) {
+                // 위치 계산
+                const position: vec3 = [
+                    x * spacing - offset,
+                    y * spacing - offset,
+                    z * spacing - offset
+                ];
+                
+                // 색상을 인덱스 기반으로 선택
+                const colorIndex = torusIndex % colors.length;
+                
+                // 단순한 회전 (성능을 위해)
+                const rotation: vec3 = [
+                    (x / gridSize) * Math.PI,
+                    (y / gridSize) * Math.PI,
+                    (z / gridSize) * Math.PI
+                ];
+                
+                // 고정된 크기 (성능을 위해)
+                toruses.push({
+                    center: position,
+                    rotation: rotation,
+                    majorRadius: 1.2, // 주반지름
+                    minorRadius: 0.4, // 부반지름
+                    sweepAngleDegree: 360, // 완전한 도넛
+                    color: colors[colorIndex],
+                    material: material
+                });
+                
+                torusIndex++;
+            }
+        }
+    }
+    
+    console.log(`Created ${toruses.length} toruses for performance testing`);
+    
+    return {
+        spheres: [],
+        cylinders: [],
+        boxes: [],
+        planes: [], // 바닥 제거 (성능을 위해)
+        circles: [],
+        ellipses: [],
+        lines: [],
+        toruses: toruses.map(convertTorusInput)
+    };
 }

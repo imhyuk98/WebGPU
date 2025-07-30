@@ -81,12 +81,22 @@ struct Line {
 struct Torus {
     center: vec3<f32>,      // 토러스의 중심점
     padding1: f32,
-    rotation: vec3<f32>,    // 회전 각도
+    rotation: vec3<f32>,    // 회전 각도 (시작 방향 조정)
     padding2: f32,
     majorRadius: f32,       // 주반지름 (R)
     minorRadius: f32,       // 부반지름 (r)
-    startAngle: f32,        // 시작 각도 (라디안)
-    endAngle: f32,          // 끝 각도 (라디안)
+    angle: f32,             // 그릴 각도 (라디안, 0부터 시작)
+    padding3: f32,          // padding (예전 endAngle 자리)
+    color: vec3<f32>,       // 색상
+    materialType: i32,      // 재질 타입
+}
+
+struct Cone {
+    center: vec3<f32>,      // 원뿔의 꼭짓점
+    padding1: f32,
+    axis: vec3<f32>,        // 원뿔의 축 방향 (정규화된 벡터)
+    height: f32,            // 원뿔의 높이
+    radius: f32,            // 원뿔 밑면의 반지름
     color: vec3<f32>,       // 색상
     materialType: i32,      // 재질 타입
 }

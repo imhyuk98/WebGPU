@@ -27,12 +27,16 @@ fn get_num_lines() -> u32 {
     return u32(scene_buffer[6]);  // 헤더의 7번째 요소
 }
 
-fn get_num_toruses() -> u32 {
+fn get_num_cones() -> u32 {
     return u32(scene_buffer[7]);  // 헤더의 8번째 요소
 }
 
+fn get_num_toruses() -> u32 {
+    return u32(scene_buffer[8]);  // 헤더의 9번째 요소
+}
+
 fn get_sphere(index: u32) -> Sphere {
-    let offset = 8u + index * 8u; // Header(8) + previous spheres
+    let offset = 9u + index * 8u; // Header(9) + previous spheres
     var s: Sphere;
     s.center = vec3<f32>(scene_buffer[offset], scene_buffer[offset + 1], scene_buffer[offset + 2]);
     s.radius = scene_buffer[offset + 3];
@@ -43,7 +47,7 @@ fn get_sphere(index: u32) -> Sphere {
 
 fn get_cylinder(index: u32) -> Cylinder {
     let num_spheres = get_num_spheres();
-    let start_of_cylinders = 8u + num_spheres * 8u;
+    let start_of_cylinders = 9u + num_spheres * 8u;
     let offset = start_of_cylinders + index * 12u; // Use correct stride for cylinders
     var c: Cylinder;
     c.p1 = vec3<f32>(scene_buffer[offset], scene_buffer[offset + 1], scene_buffer[offset + 2]);
@@ -58,8 +62,8 @@ fn get_box(index: u32) -> Box {
     let num_spheres = get_num_spheres();
     let num_cylinders = get_num_cylinders();
     
-    // Offset calculation: header(7) + spheres + cylinders + boxes
-    let offset = 8u + num_spheres * 8u + num_cylinders * 12u + index * 16u;
+    // Offset calculation: header(9) + spheres + cylinders + boxes
+    let offset = 9u + num_spheres * 8u + num_cylinders * 12u + index * 16u;
     
     var box: Box;
     box.center = vec3<f32>(scene_buffer[offset + 0u], scene_buffer[offset + 1u], scene_buffer[offset + 2u]);
@@ -75,7 +79,7 @@ fn get_plane(index: u32) -> Plane {
     let num_cylinders = get_num_cylinders();
     let num_boxes = get_num_boxes();
     
-    let offset = 8u + 
+    let offset = 9u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -102,7 +106,7 @@ fn get_circle(index: u32) -> Circle {
     let num_boxes = get_num_boxes();
     let num_planes = get_num_planes();
     
-    let offset = 8u + 
+    let offset = 9u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -127,7 +131,7 @@ fn get_ellipse(index: u32) -> Ellipse {
     let num_planes = get_num_planes();
     let num_circles = get_num_circles();
     
-    let offset = 8u + 
+    let offset = 9u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -159,7 +163,7 @@ fn get_line(index: u32) -> Line {
     let num_circles = get_num_circles();
     let num_ellipses = get_num_ellipses();
     
-    let offset = 8u + 
+    let offset = 9u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -179,7 +183,7 @@ fn get_line(index: u32) -> Line {
     return line;
 }
 
-fn get_torus(index: u32) -> Torus {
+fn get_cone(index: u32) -> Cone {
     let num_spheres = get_num_spheres();
     let num_cylinders = get_num_cylinders();
     let num_boxes = get_num_boxes();
@@ -188,7 +192,7 @@ fn get_torus(index: u32) -> Torus {
     let num_ellipses = get_num_ellipses();
     let num_lines = get_num_lines();
     
-    let offset = 8u + 
+    let offset = 9u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -196,6 +200,38 @@ fn get_torus(index: u32) -> Torus {
                  num_circles * 12u +
                  num_ellipses * 20u +
                  num_lines * 16u +
+                 index * 13u;  // coneStride = 13
+    
+    var cone: Cone;
+    cone.center = vec3<f32>(scene_buffer[offset + 0u], scene_buffer[offset + 1u], scene_buffer[offset + 2u]);
+    // offset + 3은 padding
+    cone.axis = vec3<f32>(scene_buffer[offset + 4u], scene_buffer[offset + 5u], scene_buffer[offset + 6u]);
+    cone.height = scene_buffer[offset + 7u];
+    cone.radius = scene_buffer[offset + 8u];
+    cone.color = vec3<f32>(scene_buffer[offset + 9u], scene_buffer[offset + 10u], scene_buffer[offset + 11u]);
+    cone.materialType = i32(scene_buffer[offset + 12u]);
+    return cone;
+}
+
+fn get_torus(index: u32) -> Torus {
+    let num_spheres = get_num_spheres();
+    let num_cylinders = get_num_cylinders();
+    let num_boxes = get_num_boxes();
+    let num_planes = get_num_planes();
+    let num_circles = get_num_circles();
+    let num_ellipses = get_num_ellipses();
+    let num_lines = get_num_lines();
+    let num_cones = get_num_cones();
+    
+    let offset = 9u + 
+                 num_spheres * 8u + 
+                 num_cylinders * 12u + 
+                 num_boxes * 16u + 
+                 num_planes * 20u +
+                 num_circles * 12u +
+                 num_ellipses * 20u +
+                 num_lines * 16u +
+                 num_cones * 13u +
                  index * 16u;  // torusStride = 16
     
     var torus: Torus;
@@ -205,8 +241,8 @@ fn get_torus(index: u32) -> Torus {
     // offset + 7은 padding
     torus.majorRadius = scene_buffer[offset + 8u];
     torus.minorRadius = scene_buffer[offset + 9u];
-    torus.startAngle = scene_buffer[offset + 10u];
-    torus.endAngle = scene_buffer[offset + 11u];
+    torus.angle = scene_buffer[offset + 10u];
+    // offset + 11은 padding (예전 endAngle 자리)
     torus.color = vec3<f32>(scene_buffer[offset + 12u], scene_buffer[offset + 13u], scene_buffer[offset + 14u]);
     torus.materialType = i32(scene_buffer[offset + 15u]);
     return torus;

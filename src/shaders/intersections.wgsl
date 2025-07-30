@@ -516,16 +516,8 @@ fn is_point_in_torus_angle_range(point: vec3<f32>, torus: Torus) -> bool {
         normalized_angle = normalized_angle + 2.0 * 3.14159265359;
     }
     
-    // 시작/끝 각도 범위 체크
-    var start_angle = torus.startAngle;
-    var end_angle = torus.endAngle;
-    
-    // 각도 범위가 2π를 넘나드는 경우 처리
-    if (end_angle < start_angle) {
-        return normalized_angle >= start_angle || normalized_angle <= end_angle;
-    } else {
-        return normalized_angle >= start_angle && normalized_angle <= end_angle;
-    }
+    // 단순화된 각도 범위 체크: 0부터 angle까지
+    return normalized_angle <= torus.angle;
 }
 
 // Ray-Torus intersection using sphere tracing (SDF-based ray marching)
@@ -582,4 +574,165 @@ fn calculate_torus_normal(torus: Torus, hit_point: vec3<f32>) -> vec3<f32> {
         // 안전한 기본 법선 반환
         return vec3<f32>(0.0, 1.0, 0.0);
     }
+}
+
+// Cone SDF (Signed Distance Function)
+fn cone_sdf(point: vec3<f32>, cone: Cone) -> f32 {
+    // 원뿔의 로컬 좌표계로 변환
+    let local_point = point - cone.center;
+    
+    // 축 방향으로의 투영
+    let h = dot(local_point, cone.axis);
+    
+    // 원뿔의 높이 범위 체크 (0 <= h <= height)
+    if (h < 0.0) {
+        // 꼭짓점보다 위쪽 - 꼭짓점까지의 거리
+        return length(local_point);
+    }
+    
+    if (h > cone.height) {
+        // 밑면보다 아래쪽
+        let base_center = cone.axis * cone.height;
+        let to_base = local_point - base_center;
+        let radial_dist = length(to_base - cone.axis * dot(to_base, cone.axis));
+        
+        if (radial_dist <= cone.radius) {
+            // 밑면 원 내부 - 밑면까지의 거리
+            return h - cone.height;
+        } else {
+            // 밑면 원 외부 - 밑면 가장자리까지의 거리
+            let edge_point = base_center + normalize(to_base - cone.axis * dot(to_base, cone.axis)) * cone.radius;
+            return length(local_point - edge_point);
+        }
+    }
+    
+    // 원뿔 높이 범위 내부
+    let radius_at_height = cone.radius * (cone.height - h) / cone.height;
+    let axis_projection = cone.axis * h;
+    let radial_vector = local_point - axis_projection;
+    let radial_distance = length(radial_vector);
+    
+    // 원뿔 표면까지의 부호 있는 거리
+    return radial_distance - radius_at_height;
+}
+
+// Ray-Cone intersection using analytical method (quadratic equation)
+fn ray_cone_intersect(ray: Ray, cone: Cone) -> f32 {
+    // center를 height의 중간점으로 사용
+    // 실제 꼭짓점(apex)은 center에서 height/2만큼 아래쪽
+    let apex = cone.center - cone.axis * (cone.height * 0.5);
+    
+    // 원뿔의 꼭짓점을 원점으로 하는 좌표계로 변환
+    let oc = ray.origin - apex;  // 광선 원점을 원뿔 기준으로 변환
+    let d = ray.direction;       // 광선 방향
+    let v = cone.axis;           // 원뿔 축 방향
+    
+    // 원뿔 각도의 코사인 제곱값 계산 (cos²α = h²/(h²+r²))
+    let h = cone.height;
+    let r = cone.radius;
+    let cos_alpha_sq = (h * h) / (h * h + r * r);
+    
+    // 2차 방정식의 계수들 계산
+    let dv = dot(d, v);
+    let ocv = dot(oc, v);
+    
+    let a = dv * dv - cos_alpha_sq;
+    let b = 2.0 * (dv * ocv - dot(d, oc) * cos_alpha_sq);
+    let c = ocv * ocv - dot(oc, oc) * cos_alpha_sq;
+    
+    let discriminant = b * b - 4.0 * a * c;
+    
+    if (discriminant < 0.0) {
+        return -1.0; // 교차점 없음
+    }
+    
+    let sqrt_discriminant = sqrt(discriminant);
+    var closest_t = -1.0;
+    
+    // 두 교차점 확인
+    let t1 = (-b - sqrt_discriminant) / (2.0 * a);
+    let t2 = (-b + sqrt_discriminant) / (2.0 * a);
+    
+    // 첫 번째 교차점 확인
+    if (t1 >= ray.t_min && t1 <= ray.t_max) {
+        let hit_point = ray.origin + d * t1;
+        let hit_height = dot(hit_point - apex, v);
+        
+        // 원뿔의 높이 범위 내에 있는지 확인
+        if (hit_height >= 0.0 && hit_height <= h) {
+            closest_t = t1;
+        }
+    }
+    
+    // 두 번째 교차점 확인 (더 가까운 경우에만)
+    if (t2 >= ray.t_min && t2 <= ray.t_max && (closest_t < 0.0 || t2 < closest_t)) {
+        let hit_point = ray.origin + d * t2;
+        let hit_height = dot(hit_point - apex, v);
+        
+        if (hit_height >= 0.0 && hit_height <= h) {
+            closest_t = t2;
+        }
+    }
+    
+    // 밑면과의 교차 검사 (apex에서 height만큼 떨어진 곳)
+    let base_normal = v;
+    let base_center = apex + v * h;
+    let base_denom = dot(d, base_normal);
+    
+    if (abs(base_denom) > 0.001) {
+        let t_base = dot(base_center - ray.origin, base_normal) / base_denom;
+        
+        if (t_base >= ray.t_min && t_base <= ray.t_max && (closest_t < 0.0 || t_base < closest_t)) {
+            let hit_point = ray.origin + d * t_base;
+            let distance_from_center = length(hit_point - base_center);
+            
+            if (distance_from_center <= r) {
+                closest_t = t_base;
+            }
+        }
+    }
+    
+    return closest_t;
+}
+
+// Cone 법선 계산 (해석적 방법)
+fn calculate_cone_normal(cone: Cone, hit_point: vec3<f32>) -> vec3<f32> {
+    let v = cone.axis;  // 원뿔 축
+    // center를 height의 중간점으로 사용하므로 apex는 center에서 height/2만큼 아래
+    let apex = cone.center - v * (cone.height * 0.5);  
+    let base_center = apex + v * cone.height;  // 밑면 중심
+    
+    // 교차점이 밑면에 있는지 확인
+    let hit_to_base = hit_point - base_center;
+    let distance_to_base = abs(dot(hit_to_base, v));
+    
+    if (distance_to_base < 0.01) {
+        // 밑면에 있으면 밑면 법선 반환 (축 방향)
+        return v;
+    }
+    
+    // 원뿔 측면에 있는 경우
+    let hit_to_apex = hit_point - apex;
+    let height_projection = dot(hit_to_apex, v);
+    
+    // 축에 수직인 벡터 계산
+    let radial_vector = hit_to_apex - v * height_projection;
+    let radial_distance = length(radial_vector);
+    
+    if (radial_distance > 0.001) {
+        let radial_direction = radial_vector / radial_distance;
+        
+        // 원뿔 각도의 코사인 값
+        let h = cone.height;
+        let r = cone.radius;
+        let cos_alpha = h / sqrt(h * h + r * r);
+        let sin_alpha = r / sqrt(h * h + r * r);
+        
+        // 원뿔 표면의 법선 = 반지름 방향 * cos_alpha + 축 방향 * sin_alpha
+        let normal = radial_direction * cos_alpha + v * sin_alpha;
+        return normalize(normal);
+    }
+    
+    // 축 위에 있는 경우 기본 법선
+    return vec3<f32>(0.0, 1.0, 0.0);
 }

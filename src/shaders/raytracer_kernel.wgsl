@@ -189,6 +189,23 @@ fn trace(r: Ray) -> vec3<f32> {
             }
         }
 
+        // Cone 검사 추가
+        let num_cones = get_num_cones();
+        for (var i = 0u; i < num_cones; i = i + 1u) {
+            let cone = get_cone(i);
+            let t_cone = ray_cone_intersect(current_ray, cone);
+
+            if (t_cone > 0.0 && t_cone < closest_hit.t) {
+                closest_hit.t = t_cone;
+                let hit_point = current_ray.origin + current_ray.direction * t_cone;
+                var cone_normal = calculate_cone_normal(cone, hit_point);
+                
+                closest_hit.normal = cone_normal;
+                closest_hit.color = cone.color;
+                closest_hit.materialType = cone.materialType;
+            }
+        }
+
         // Torus 검사 추가
         let num_toruses = get_num_toruses();
         for (var i = 0u; i < num_toruses; i = i + 1u) {

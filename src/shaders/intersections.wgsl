@@ -736,3 +736,27 @@ fn calculate_cone_normal(cone: Cone, hit_point: vec3<f32>) -> vec3<f32> {
     // 축 위에 있는 경우 기본 법선
     return vec3<f32>(0.0, 1.0, 0.0);
 }
+
+// BVH AABB intersection test
+fn ray_aabb_intersect(ray: Ray, minCorner: vec3<f32>, maxCorner: vec3<f32>) -> f32 {
+    let inv_dir = 1.0 / ray.direction;
+    
+    let t1 = (minCorner - ray.origin) * inv_dir;
+    let t2 = (maxCorner - ray.origin) * inv_dir;
+    
+    let t_min = min(t1, t2);
+    let t_max = max(t1, t2);
+    
+    let t_near = max(max(t_min.x, t_min.y), t_min.z);
+    let t_far = min(min(t_max.x, t_max.y), t_max.z);
+    
+    if (t_near > t_far || t_far < 0.0) {
+        return -1.0; // No intersection
+    }
+    
+    if (t_near > 0.0) {
+        return t_near;
+    }
+    
+    return t_far;
+}

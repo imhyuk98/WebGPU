@@ -36,7 +36,7 @@ fn get_num_toruses() -> u32 {
 }
 
 fn get_sphere(index: u32) -> Sphere {
-    let offset = 9u + index * 8u; // Header(9) + previous spheres
+    let offset = 12u + index * 8u; // Header(12) + previous spheres
     var s: Sphere;
     s.center = vec3<f32>(scene_buffer[offset], scene_buffer[offset + 1], scene_buffer[offset + 2]);
     s.radius = scene_buffer[offset + 3];
@@ -47,7 +47,7 @@ fn get_sphere(index: u32) -> Sphere {
 
 fn get_cylinder(index: u32) -> Cylinder {
     let num_spheres = get_num_spheres();
-    let start_of_cylinders = 9u + num_spheres * 8u;
+    let start_of_cylinders = 12u + num_spheres * 8u;
     let offset = start_of_cylinders + index * 12u; // Use correct stride for cylinders
     var c: Cylinder;
     c.p1 = vec3<f32>(scene_buffer[offset], scene_buffer[offset + 1], scene_buffer[offset + 2]);
@@ -62,8 +62,8 @@ fn get_box(index: u32) -> Box {
     let num_spheres = get_num_spheres();
     let num_cylinders = get_num_cylinders();
     
-    // Offset calculation: header(9) + spheres + cylinders + boxes
-    let offset = 9u + num_spheres * 8u + num_cylinders * 12u + index * 16u;
+    // Offset calculation: header(12) + spheres + cylinders + boxes
+    let offset = 12u + num_spheres * 8u + num_cylinders * 12u + index * 16u;
     
     var box: Box;
     box.center = vec3<f32>(scene_buffer[offset + 0u], scene_buffer[offset + 1u], scene_buffer[offset + 2u]);
@@ -79,7 +79,7 @@ fn get_plane(index: u32) -> Plane {
     let num_cylinders = get_num_cylinders();
     let num_boxes = get_num_boxes();
     
-    let offset = 9u + 
+    let offset = 12u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -106,7 +106,7 @@ fn get_circle(index: u32) -> Circle {
     let num_boxes = get_num_boxes();
     let num_planes = get_num_planes();
     
-    let offset = 9u + 
+    let offset = 12u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -131,7 +131,7 @@ fn get_ellipse(index: u32) -> Ellipse {
     let num_planes = get_num_planes();
     let num_circles = get_num_circles();
     
-    let offset = 9u + 
+    let offset = 12u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -163,7 +163,7 @@ fn get_line(index: u32) -> Line {
     let num_circles = get_num_circles();
     let num_ellipses = get_num_ellipses();
     
-    let offset = 9u + 
+    let offset = 12u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -192,7 +192,7 @@ fn get_cone(index: u32) -> Cone {
     let num_ellipses = get_num_ellipses();
     let num_lines = get_num_lines();
     
-    let offset = 9u + 
+    let offset = 12u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -200,7 +200,7 @@ fn get_cone(index: u32) -> Cone {
                  num_circles * 12u +
                  num_ellipses * 20u +
                  num_lines * 16u +
-                 index * 13u;  // coneStride = 13
+                 index * 16u;  // Changed from 13u to 16u for 4-byte alignment  // coneStride = 13
     
     var cone: Cone;
     cone.center = vec3<f32>(scene_buffer[offset + 0u], scene_buffer[offset + 1u], scene_buffer[offset + 2u]);
@@ -208,8 +208,9 @@ fn get_cone(index: u32) -> Cone {
     cone.axis = vec3<f32>(scene_buffer[offset + 4u], scene_buffer[offset + 5u], scene_buffer[offset + 6u]);
     cone.height = scene_buffer[offset + 7u];
     cone.radius = scene_buffer[offset + 8u];
-    cone.color = vec3<f32>(scene_buffer[offset + 9u], scene_buffer[offset + 10u], scene_buffer[offset + 11u]);
-    cone.materialType = i32(scene_buffer[offset + 12u]);
+    // offset + 9, 10, 11은 padding
+    cone.color = vec3<f32>(scene_buffer[offset + 12u], scene_buffer[offset + 13u], scene_buffer[offset + 14u]);
+    cone.materialType = i32(scene_buffer[offset + 15u]);
     return cone;
 }
 
@@ -223,7 +224,7 @@ fn get_torus(index: u32) -> Torus {
     let num_lines = get_num_lines();
     let num_cones = get_num_cones();
     
-    let offset = 9u + 
+    let offset = 12u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -231,7 +232,7 @@ fn get_torus(index: u32) -> Torus {
                  num_circles * 12u +
                  num_ellipses * 20u +
                  num_lines * 16u +
-                 num_cones * 13u +
+                 num_cones * 16u +  // Updated cone stride
                  index * 16u;  // torusStride = 16
     
     var torus: Torus;
@@ -246,4 +247,19 @@ fn get_torus(index: u32) -> Torus {
     torus.color = vec3<f32>(scene_buffer[offset + 12u], scene_buffer[offset + 13u], scene_buffer[offset + 14u]);
     torus.materialType = i32(scene_buffer[offset + 15u]);
     return torus;
+}
+
+// BVH access functions
+fn get_bvh_node(index: u32) -> BVHNode {
+    let offset = index * 8u; // Each node is 8 floats
+    var node: BVHNode;
+    node.minCorner = vec3<f32>(bvh_buffer[offset], bvh_buffer[offset + 1u], bvh_buffer[offset + 2u]);
+    node.leftChild = bvh_buffer[offset + 3u];
+    node.maxCorner = vec3<f32>(bvh_buffer[offset + 4u], bvh_buffer[offset + 5u], bvh_buffer[offset + 6u]);
+    node.primitiveCount = bvh_buffer[offset + 7u];
+    return node;
+}
+
+fn get_primitive_index(index: u32) -> u32 {
+    return primitive_index_buffer[index];
 }

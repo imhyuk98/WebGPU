@@ -97,6 +97,9 @@ struct Cone {
     axis: vec3<f32>,        // 원뿔의 축 방향 (정규화된 벡터)
     height: f32,            // 원뿔의 높이
     radius: f32,            // 원뿔 밑면의 반지름
+    padding2: f32,          // 4-byte alignment padding
+    padding3: f32,          // 4-byte alignment padding
+    padding4: f32,          // 4-byte alignment padding
     color: vec3<f32>,       // 색상
     materialType: i32,      // 재질 타입
 }
@@ -118,4 +121,12 @@ struct Hit {
 struct Interval {
     min: f32,
     max: f32,
+};
+
+// BVH Node structure
+struct BVHNode {
+    minCorner: vec3<f32>,     // AABB minimum corner
+    leftChild: f32,           // Left child index (or first primitive index if leaf)
+    maxCorner: vec3<f32>,     // AABB maximum corner  
+    primitiveCount: f32,      // Number of primitives (0 for internal nodes)
 };

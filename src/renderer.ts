@@ -10,6 +10,9 @@ import {
     getBoundingSphereForSphere, getBoundingSphereForBox, 
     getBoundingSphereForCylinder, getBoundingSphereForTorus
 } from "./utils";
+import { BVHBuilder } from "./bvh/builder";
+import { BVHNode } from "./bvh/node";
+import { BVHPrimitive } from "./bvh/geometry";
 
 // Data structures for scene objects
 export interface Sphere {
@@ -154,14 +157,23 @@ export class Renderer {
     camera_buffer: GPUBuffer; // 카메라 정보 저장 (위치, 방향 등)
     
     // Frustum Culling
-    enableFrustumCulling: boolean = true; // Frustum Culling 활성화 여부
+    enableFrustumCulling: boolean = false; // BVH 테스트를 위해 임시 비활성화
     originalScene: Scene; // 원본 Scene 저장
     sceneBuffer: GPUBuffer; // Scene 버퍼를 재사용하기 위해 저장
     ray_tracing_bind_group_layout: GPUBindGroupLayout; // BindGroup 레이아웃 저장
 
+    // BVH System
+    enableBVH: boolean = true; // BVH 활성화 여부
+    bvhBuilder: BVHBuilder; // BVH 빌더
+    bvhNodes: BVHNode[] = []; // BVH 노드들
+    bvhPrimitiveIndices: number[] = []; // BVH primitive 인덱스들
+    bvhBuffer: GPUBuffer; // BVH 노드 버퍼
+    primitiveIndexBuffer: GPUBuffer; // Primitive 인덱스 버퍼
+
     // canvas 연결
     constructor(canvas: HTMLCanvasElement){
         this.canvas = canvas;
+        this.bvhBuilder = new BVHBuilder();
     }
 
    // Initialize now takes a Scene object
@@ -204,16 +216,16 @@ export class Renderer {
     async makePipeline(scene: Scene) {
 
         // --- Data Packing ---
-        const headerSize = 9; // 9 floats for the header (spheres, cylinders, boxes, planes, circles, ellipses, lines, cones, toruses)
-        const sphereStride = 8; // 8 floats per sphere (vec3, float, vec3, float)
-        const cylinderStride = 12; // 12 floats per cylinder based on WGSL struct alignment
-        const boxStride = 16; // 16 floats per box (vec3, vec3, vec3, vec3)
-        const planeStride = 20;  // Plane 크기
-        const circleStride = 12; // Circle 크기 (center(3) + radius(1) + normal(3) + padding(1) + color(3) + materialType(1))
-        const ellipseStride = 20; // Ellipse 크기 (center(3) + padding(1) + radiusA(1) + radiusB(1) + padding(2) + normal(3) + padding(1) + rotation(3) + padding(1) + color(3) + materialType(1))
-        const lineStride = 16; // Line 크기 (start(3) + padding(1) + end(3) + thickness(1) + color(3) + materialType(1))
-        const coneStride = 13; // Cone 크기 (center(3) + padding(1) + axis(3) + height(1) + radius(1) + color(3) + materialType(1))
-        const torusStride = 16; // Torus 크기 (center(3) + padding(1) + rotation(3) + padding(1) + majorRadius(1) + minorRadius(1) + padding(2) + color(3) + materialType(1))
+        const headerSize = 12; // 12 floats for the header (9 counts + 3 padding for 4-byte alignment)
+        const sphereStride = 8; // 8 floats per sphere (vec3, float, vec3, float) - already 4-byte aligned
+        const cylinderStride = 12; // 12 floats per cylinder based on WGSL struct alignment - already 4-byte aligned
+        const boxStride = 16; // 16 floats per box (vec3, vec3, vec3, vec3) - already 4-byte aligned
+        const planeStride = 20;  // 20 floats - already 4-byte aligned
+        const circleStride = 12; // 12 floats - already 4-byte aligned
+        const ellipseStride = 20; // 20 floats - already 4-byte aligned
+        const lineStride = 16; // 16 floats - already 4-byte aligned
+        const coneStride = 16; // 16 floats (center(3) + padding(1) + axis(3) + height(1) + radius(1) + padding(3) + color(3) + materialType(1))
+        const torusStride = 16; // 16 floats - already 4-byte aligned
 
         const totalSizeInFloats = headerSize + 
                                   scene.spheres.length * sphereStride + 
@@ -227,7 +239,7 @@ export class Renderer {
                                   scene.toruses.length * torusStride;
         const sceneData = new Float32Array(totalSizeInFloats);
 
-        // 1. Write header
+        // 1. Write header with padding for 4-byte alignment
         sceneData[0] = scene.spheres.length;
         sceneData[1] = scene.cylinders.length;
         sceneData[2] = scene.boxes.length; // 직육면체 개수 추가
@@ -237,6 +249,9 @@ export class Renderer {
         sceneData[6] = scene.lines.length; // Line 개수 추가
         sceneData[7] = scene.cones.length; // Cone 개수 추가
         sceneData[8] = scene.toruses.length; // Torus 개수 추가
+        sceneData[9] = 0; // padding
+        sceneData[10] = 0; // padding
+        sceneData[11] = 0; // padding
 
         // 2. Write sphere data
         let offset = headerSize;
@@ -385,7 +400,7 @@ export class Renderer {
             offset += lineStride;
         }
 
-        // Cone 데이터 패킹
+        // Cone 데이터 패킹 (16 floats for 4-byte alignment)
         for (const cone of scene.cones) {
             sceneData[offset + 0] = cone.center[0];
             sceneData[offset + 1] = cone.center[1];
@@ -396,10 +411,13 @@ export class Renderer {
             sceneData[offset + 6] = cone.axis[2];
             sceneData[offset + 7] = cone.height;
             sceneData[offset + 8] = cone.radius;
-            sceneData[offset + 9] = cone.color[0];
-            sceneData[offset + 10] = cone.color[1];
-            sceneData[offset + 11] = cone.color[2];
-            sceneData[offset + 12] = cone.material.type;
+            sceneData[offset + 9] = 0; // padding
+            sceneData[offset + 10] = 0; // padding
+            sceneData[offset + 11] = 0; // padding
+            sceneData[offset + 12] = cone.color[0];
+            sceneData[offset + 13] = cone.color[1];
+            sceneData[offset + 14] = cone.color[2];
+            sceneData[offset + 15] = cone.material.type;
             offset += coneStride;
         }
 
@@ -430,6 +448,11 @@ export class Renderer {
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
         this.device.queue.writeBuffer(this.sceneBuffer, 0, sceneData);
+
+        // --- BVH Construction ---
+        if (this.enableBVH) {
+            this.buildBVH(scene);
+        }
 
         // --- Camera Buffer ---
         this.camera_buffer = this.device.createBuffer({
@@ -480,6 +503,16 @@ export class Renderer {
                     binding: 3, // Camera uniform
                     visibility: GPUShaderStage.COMPUTE,
                     buffer: { type: "uniform" }
+                },
+                {
+                    binding: 4, // BVH nodes (if enabled)
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: { type: "read-only-storage" }
+                },
+                {
+                    binding: 5, // BVH primitive indices (if enabled)
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: { type: "read-only-storage" }
                 }
             ]
         });
@@ -502,6 +535,14 @@ export class Renderer {
                 {
                     binding: 3,
                     resource: { buffer: this.camera_buffer }
+                },
+                {
+                    binding: 4,
+                    resource: { buffer: this.bvhBuffer || this.createDummyBuffer() }
+                },
+                {
+                    binding: 5,
+                    resource: { buffer: this.primitiveIndexBuffer || this.createDummyBuffer() }
                 }
             ]
         });
@@ -765,7 +806,7 @@ export class Renderer {
     // Scene 데이터를 GPU 버퍼에 업데이트
     updateSceneBuffer(scene: Scene) {
         // Scene 데이터 패킹 (기존 makePipeline의 데이터 패킹 로직 사용)
-        const headerSize = 9;
+        const headerSize = 12; // 12 floats for 4-byte alignment
         const sphereStride = 8;
         const cylinderStride = 12;
         const boxStride = 16;
@@ -773,7 +814,7 @@ export class Renderer {
         const circleStride = 12;
         const ellipseStride = 20;
         const lineStride = 16;
-        const coneStride = 13;
+        const coneStride = 16; // Updated to 16 for 4-byte alignment
         const torusStride = 16;
 
         const totalSizeInFloats = headerSize + 
@@ -788,7 +829,7 @@ export class Renderer {
                                   scene.toruses.length * torusStride;
         const sceneData = new Float32Array(totalSizeInFloats);
 
-        // 헤더 작성
+        // 헤더 작성 (12 floats with padding)
         sceneData[0] = scene.spheres.length;
         sceneData[1] = scene.cylinders.length;
         sceneData[2] = scene.boxes.length;
@@ -798,6 +839,9 @@ export class Renderer {
         sceneData[6] = scene.lines.length;
         sceneData[7] = scene.cones.length;
         sceneData[8] = scene.toruses.length;
+        sceneData[9] = 0; // padding
+        sceneData[10] = 0; // padding
+        sceneData[11] = 0; // padding
 
         // 데이터 패킹 (기존 로직과 동일)
         let offset = headerSize;
@@ -935,7 +979,7 @@ export class Renderer {
             offset += lineStride;
         }
 
-        // Cones
+        // Cones (16 floats with padding for alignment)
         for (const cone of scene.cones) {
             sceneData[offset + 0] = cone.center[0];
             sceneData[offset + 1] = cone.center[1];
@@ -946,10 +990,13 @@ export class Renderer {
             sceneData[offset + 6] = cone.axis[2];
             sceneData[offset + 7] = cone.height;
             sceneData[offset + 8] = cone.radius;
-            sceneData[offset + 9] = cone.color[0];
-            sceneData[offset + 10] = cone.color[1];
-            sceneData[offset + 11] = cone.color[2];
-            sceneData[offset + 12] = cone.material.type;
+            sceneData[offset + 9] = 0; // padding
+            sceneData[offset + 10] = 0; // padding
+            sceneData[offset + 11] = 0; // padding
+            sceneData[offset + 12] = cone.color[0];
+            sceneData[offset + 13] = cone.color[1];
+            sceneData[offset + 14] = cone.color[2];
+            sceneData[offset + 15] = cone.material.type;
             offset += coneStride;
         }
 
@@ -1003,6 +1050,14 @@ export class Renderer {
                     {
                         binding: 3,
                         resource: { buffer: this.camera_buffer }
+                    },
+                    {
+                        binding: 4,
+                        resource: { buffer: this.bvhBuffer || this.createDummyBuffer() }
+                    },
+                    {
+                        binding: 5,
+                        resource: { buffer: this.primitiveIndexBuffer || this.createDummyBuffer() }
                     }
                 ]
             });
@@ -1010,6 +1065,42 @@ export class Renderer {
         
         // 데이터 업데이트
         this.device.queue.writeBuffer(this.sceneBuffer, 0, sceneData);
+
+        // BVH 업데이트 (frustum culling된 scene으로)
+        if (this.enableBVH) {
+            this.buildBVH(scene);
+            
+            // BVH가 업데이트되었으므로 BindGroup 재생성
+            this.ray_tracing_bind_group = this.device.createBindGroup({
+                layout: this.ray_tracing_bind_group_layout,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: this.color_buffer_view
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: this.sceneBuffer }
+                    },
+                    {
+                        binding: 2,
+                        resource: { buffer: this.uniform_buffer }
+                    },
+                    {
+                        binding: 3,
+                        resource: { buffer: this.camera_buffer }
+                    },
+                    {
+                        binding: 4,
+                        resource: { buffer: this.bvhBuffer }
+                    },
+                    {
+                        binding: 5,
+                        resource: { buffer: this.primitiveIndexBuffer }
+                    }
+                ]
+            });
+        }
     }
 
     render = (look_from: vec3, look_at: vec3, v_up: vec3, v_fov: number, aspect_ratio: number) => {
@@ -1074,6 +1165,67 @@ export class Renderer {
     
         this.device.queue.submit([commandEncoder.finish()]);
 
+    }
+
+    // BVH 구축 메서드
+    buildBVH(scene: Scene): void {
+        const result = this.bvhBuilder.buildBVH(scene);
+        this.bvhNodes = result.nodes;
+        this.bvhPrimitiveIndices = result.primitiveIndices;
+
+        // BVH 노드 데이터를 GPU 버퍼로 패킹
+        if (this.bvhNodes.length > 0) {
+            // 각 노드는 8 floats (minCorner(3) + leftChild(1) + maxCorner(3) + primitiveCount(1))
+            const nodeData = new Float32Array(this.bvhNodes.length * 8);
+            
+            for (let i = 0; i < this.bvhNodes.length; i++) {
+                const node = this.bvhNodes[i];
+                const offset = i * 8;
+                
+                nodeData[offset + 0] = node.minCorner[0];
+                nodeData[offset + 1] = node.minCorner[1];
+                nodeData[offset + 2] = node.minCorner[2];
+                nodeData[offset + 3] = node.leftChild;
+                nodeData[offset + 4] = node.maxCorner[0];
+                nodeData[offset + 5] = node.maxCorner[1];
+                nodeData[offset + 6] = node.maxCorner[2];
+                nodeData[offset + 7] = node.primitiveCount;
+            }
+
+            // BVH 노드 버퍼 생성
+            if (this.bvhBuffer) {
+                this.bvhBuffer.destroy();
+            }
+            this.bvhBuffer = this.device.createBuffer({
+                size: Math.max(nodeData.byteLength, 16), // 최소 16 bytes
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+            this.device.queue.writeBuffer(this.bvhBuffer, 0, nodeData);
+        }
+
+        // Primitive 인덱스 버퍼 생성
+        if (this.bvhPrimitiveIndices.length > 0) {
+            const indexData = new Uint32Array(this.bvhPrimitiveIndices);
+            
+            if (this.primitiveIndexBuffer) {
+                this.primitiveIndexBuffer.destroy();
+            }
+            this.primitiveIndexBuffer = this.device.createBuffer({
+                size: Math.max(indexData.byteLength, 16), // 최소 16 bytes
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+            this.device.queue.writeBuffer(this.primitiveIndexBuffer, 0, indexData);
+        }
+
+        console.log(`BVH built: ${this.bvhNodes.length} nodes, ${this.bvhPrimitiveIndices.length} primitives`);
+    }
+
+    // 더미 버퍼 생성 (BVH가 비활성화된 경우 사용)
+    createDummyBuffer(): GPUBuffer {
+        return this.device.createBuffer({
+            size: 16, // 최소 크기
+            usage: GPUBufferUsage.STORAGE,
+        });
     }
     
 }

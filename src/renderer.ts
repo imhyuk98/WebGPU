@@ -1,6 +1,7 @@
 import structs_shader from "./shaders/structs.wgsl"
 import scene_shader_code from "./shaders/scene.wgsl"
 import intersections_shader from "./shaders/intersections.wgsl"
+import bezier_patch_shader from "./shaders/bezier_patch.wgsl"
 import raytracer_kernel from "./shaders/raytracer_kernel.wgsl"
 import screen_shader from "./shaders/screen_shader.wgsl"
 import { Material, MaterialType, MaterialTemplates } from "./material";
@@ -8,11 +9,15 @@ import {
     vec3, add, subtract, scale, length, normalize, cross,
     createFrustum, sphereInFrustum, Frustum, BoundingSphere,
     getBoundingSphereForSphere, getBoundingSphereForBox, 
-    getBoundingSphereForCylinder, getBoundingSphereForTorus
+    getBoundingSphereForCylinder, getBoundingSphereForTorus,
+    BezierPatch, ControlPointMatrix
 } from "./utils";
 import { BVHBuilder } from "./bvh/builder";
 import { BVHNode } from "./bvh/node";
 import { BVHPrimitive } from "./bvh/geometry";
+
+// Re-export for use in other modules
+export { BezierPatch } from "./utils";
 
 // Data structures for scene objects
 export interface Sphere {
@@ -115,6 +120,7 @@ export interface Scene {
     lines: Line[];
     cones: ConeGeometry[];
     toruses: Torus[];
+    bezierPatches?: BezierPatch[];
 }
 
 // Scene 생성 시 사용할 수 있는 입력용 인터페이스
@@ -128,6 +134,7 @@ export interface SceneInput {
     lines?: Line[];
     cones?: ConeGeometry[];
     toruses?: TorusInput[];
+    bezierPatches?: BezierPatch[];
 }
 
 
@@ -169,6 +176,7 @@ export class Renderer {
     bvhPrimitiveIndices: number[] = []; // BVH primitive 인덱스들
     bvhBuffer: GPUBuffer; // BVH 노드 버퍼
     primitiveIndexBuffer: GPUBuffer; // Primitive 인덱스 버퍼
+    primitiveInfoBuffer: GPUBuffer; // Primitive 타입 정보 버퍼
 
     // canvas 연결
     constructor(canvas: HTMLCanvasElement){
@@ -216,7 +224,7 @@ export class Renderer {
     async makePipeline(scene: Scene) {
 
         // --- Data Packing ---
-        const headerSize = 12; // 12 floats for the header (9 counts + 3 padding for 4-byte alignment)
+        const headerSize = 13; // 13 floats for the header (10 counts + 3 padding for 4-byte alignment)
         const sphereStride = 8; // 8 floats per sphere (vec3, float, vec3, float) - already 4-byte aligned
         const cylinderStride = 12; // 12 floats per cylinder based on WGSL struct alignment - already 4-byte aligned
         const boxStride = 16; // 16 floats per box (vec3, vec3, vec3, vec3) - already 4-byte aligned
@@ -226,6 +234,7 @@ export class Renderer {
         const lineStride = 16; // 16 floats - already 4-byte aligned
         const coneStride = 16; // 16 floats (center(3) + padding(1) + axis(3) + height(1) + radius(1) + padding(3) + color(3) + materialType(1))
         const torusStride = 16; // 16 floats - already 4-byte aligned
+        const bezierPatchStride = 60; // 16 control points (48 floats) + bounding box (8 floats) + color+material (4 floats)
 
         const totalSizeInFloats = headerSize + 
                                   scene.spheres.length * sphereStride + 
@@ -236,7 +245,8 @@ export class Renderer {
                                   scene.ellipses.length * ellipseStride +
                                   scene.lines.length * lineStride +
                                   scene.cones.length * coneStride +
-                                  scene.toruses.length * torusStride;
+                                  scene.toruses.length * torusStride +
+                                  (scene.bezierPatches?.length || 0) * bezierPatchStride;
         const sceneData = new Float32Array(totalSizeInFloats);
 
         // 1. Write header with padding for 4-byte alignment
@@ -249,9 +259,11 @@ export class Renderer {
         sceneData[6] = scene.lines.length; // Line 개수 추가
         sceneData[7] = scene.cones.length; // Cone 개수 추가
         sceneData[8] = scene.toruses.length; // Torus 개수 추가
-        sceneData[9] = 0; // padding
+        sceneData[9] = scene.bezierPatches?.length || 0; // BezierPatch 개수 추가
+        console.log(`📦 Header: bezierPatches count = ${sceneData[9]}`);
         sceneData[10] = 0; // padding
         sceneData[11] = 0; // padding
+        sceneData[12] = 0; // padding
 
         // 2. Write sphere data
         let offset = headerSize;
@@ -442,11 +454,67 @@ export class Renderer {
             offset += torusStride;
         }
 
+        // Bézier patches 데이터 패킹
+        if (scene.bezierPatches) {
+            console.log(`🔵 Packing ${scene.bezierPatches.length} Bezier patches`);
+            console.log(`🎯 Bezier patch starts at absolute offset: ${offset}`);
+            for (const patch of scene.bezierPatches) {
+                console.log(`📦 Bezier patch: color=${patch.color}, material=${patch.material.type}`);
+                console.log(`📦 Bounding box: min=${patch.boundingBox.min}, max=${patch.boundingBox.max}`);
+                const patchStartOffset = offset;
+                // Pack 16 control points (48 floats)
+                // Convert from 4x4 matrix to flat array of 16 points
+                for (let row = 0; row < 4; row++) {
+                    for (let col = 0; col < 4; col++) {
+                        const cp = patch.controlPoints[row][col];
+                        const idx = row * 4 + col;
+                        sceneData[offset + idx * 3 + 0] = cp[0];
+                        sceneData[offset + idx * 3 + 1] = cp[1];
+                        sceneData[offset + idx * 3 + 2] = cp[2];
+                    }
+                }
+                offset += 48; // 16 control points * 3 floats each
+                console.log(`📦 After control points, offset = ${offset}`);
+                
+                // Pack bounding box (min and max corners - 8 floats with padding)
+                sceneData[offset + 0] = patch.boundingBox.min[0];
+                sceneData[offset + 1] = patch.boundingBox.min[1];
+                sceneData[offset + 2] = patch.boundingBox.min[2];
+                sceneData[offset + 3] = 0; // padding
+                sceneData[offset + 4] = patch.boundingBox.max[0];
+                sceneData[offset + 5] = patch.boundingBox.max[1];
+                sceneData[offset + 6] = patch.boundingBox.max[2];
+                sceneData[offset + 7] = 0; // padding
+                offset += 8;
+                console.log(`📦 After bounding box, offset = ${offset}`);
+                
+                // Pack color and material (4 floats)
+                sceneData[offset + 0] = patch.color[0];
+                sceneData[offset + 1] = patch.color[1];
+                sceneData[offset + 2] = patch.color[2];
+                sceneData[offset + 3] = patch.material.type;
+                console.log(`🎨 Packed color at absolute offset ${offset}: [${sceneData[offset + 0]}, ${sceneData[offset + 1]}, ${sceneData[offset + 2]}], material: ${sceneData[offset + 3]}`);
+                console.log(`📍 Patch start: ${patchStartOffset}, Control points: ${patchStartOffset}-${patchStartOffset + 47}, Bounding box: ${patchStartOffset + 48}-${patchStartOffset + 55}, Color: ${patchStartOffset + 56}-${patchStartOffset + 59}`);
+                offset += 4;
+            }
+        }
+
         // Create a storage buffer for the scene data
         this.sceneBuffer = this.device.createBuffer({
             size: Math.max(sceneData.byteLength, 1024 * 1024), // 최소 1MB로 설정
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
+        
+        // Debug: Check buffer content just before writing to GPU
+        if (scene.bezierPatches.length > 0) {
+            const bezierPatchOffset = offset - 4; // Last packed offset (color start)
+            console.log(`🔍 Final buffer check before GPU upload:`);
+            console.log(`  Color R at position ${bezierPatchOffset}: ${sceneData[bezierPatchOffset]}`);
+            console.log(`  Color G at position ${bezierPatchOffset + 1}: ${sceneData[bezierPatchOffset + 1]}`);
+            console.log(`  Color B at position ${bezierPatchOffset + 2}: ${sceneData[bezierPatchOffset + 2]}`);
+            console.log(`  Material at position ${bezierPatchOffset + 3}: ${sceneData[bezierPatchOffset + 3]}`);
+        }
+        
         this.device.queue.writeBuffer(this.sceneBuffer, 0, sceneData);
 
         // --- BVH Construction ---
@@ -475,6 +543,7 @@ export class Renderer {
             ${structs_shader}
             ${scene_shader_code}
             ${intersections_shader}
+            ${bezier_patch_shader}
             ${raytracer_kernel}
         `;
 
@@ -513,6 +582,11 @@ export class Renderer {
                     binding: 5, // BVH primitive indices (if enabled)
                     visibility: GPUShaderStage.COMPUTE,
                     buffer: { type: "read-only-storage" }
+                },
+                {
+                    binding: 6, // BVH primitive info (type + geometry index)
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: { type: "read-only-storage" }
                 }
             ]
         });
@@ -543,6 +617,10 @@ export class Renderer {
                 {
                     binding: 5,
                     resource: { buffer: this.primitiveIndexBuffer || this.createDummyBuffer() }
+                },
+                {
+                    binding: 6,
+                    resource: { buffer: this.primitiveInfoBuffer || this.createDummyBuffer() }
                 }
             ]
         });
@@ -678,7 +756,8 @@ export class Renderer {
             ellipses: [],
             lines: [],
             cones: [],
-            toruses: []
+            toruses: [],
+            bezierPatches: []
         };
 
         let totalObjects = 0;
@@ -795,6 +874,28 @@ export class Renderer {
             }
         }
 
+        // Bézier Patch Culling
+        if (this.originalScene.bezierPatches) {
+            for (const patch of this.originalScene.bezierPatches) {
+                totalObjects++;
+                // Use bounding box to create conservative bounding sphere
+                const center: vec3 = [
+                    (patch.boundingBox.min[0] + patch.boundingBox.max[0]) / 2,
+                    (patch.boundingBox.min[1] + patch.boundingBox.max[1]) / 2,
+                    (patch.boundingBox.min[2] + patch.boundingBox.max[2]) / 2
+                ];
+                const size = subtract(patch.boundingBox.max, patch.boundingBox.min);
+                const radius = length(size) / 2; // Conservative sphere radius
+                const boundingSphere = getBoundingSphereForSphere(center, radius);
+                if (sphereInFrustum(boundingSphere, frustum)) {
+                    if (!culledScene.bezierPatches) culledScene.bezierPatches = [];
+                    culledScene.bezierPatches.push(patch);
+                } else {
+                    culledObjects++;
+                }
+            }
+        }
+
         // 디버그 정보 출력 (매 프레임마다는 너무 많으니 가끔씩만)
         if (Math.random() < 0.01) { // 1% 확률로 출력
             console.log(`Frustum Culling: ${culledObjects}/${totalObjects} objects culled (${((culledObjects/totalObjects)*100).toFixed(1)}%)`);
@@ -806,7 +907,7 @@ export class Renderer {
     // Scene 데이터를 GPU 버퍼에 업데이트
     updateSceneBuffer(scene: Scene) {
         // Scene 데이터 패킹 (기존 makePipeline의 데이터 패킹 로직 사용)
-        const headerSize = 12; // 12 floats for 4-byte alignment
+        const headerSize = 13; // 13 floats for Bézier patches
         const sphereStride = 8;
         const cylinderStride = 12;
         const boxStride = 16;
@@ -816,6 +917,7 @@ export class Renderer {
         const lineStride = 16;
         const coneStride = 16; // Updated to 16 for 4-byte alignment
         const torusStride = 16;
+        const bezierPatchStride = 60; // 16 control points (48 floats) + bounding box (8 floats) + color+material (4 floats)
 
         const totalSizeInFloats = headerSize + 
                                   scene.spheres.length * sphereStride + 
@@ -826,10 +928,11 @@ export class Renderer {
                                   scene.ellipses.length * ellipseStride +
                                   scene.lines.length * lineStride +
                                   scene.cones.length * coneStride +
-                                  scene.toruses.length * torusStride;
+                                  scene.toruses.length * torusStride +
+                                  (scene.bezierPatches?.length || 0) * bezierPatchStride;
         const sceneData = new Float32Array(totalSizeInFloats);
 
-        // 헤더 작성 (12 floats with padding)
+        // 헤더 작성 (13 floats with padding)
         sceneData[0] = scene.spheres.length;
         sceneData[1] = scene.cylinders.length;
         sceneData[2] = scene.boxes.length;
@@ -839,9 +942,10 @@ export class Renderer {
         sceneData[6] = scene.lines.length;
         sceneData[7] = scene.cones.length;
         sceneData[8] = scene.toruses.length;
-        sceneData[9] = 0; // padding
+        sceneData[9] = scene.bezierPatches?.length || 0;
         sceneData[10] = 0; // padding
         sceneData[11] = 0; // padding
+        sceneData[12] = 0; // padding
 
         // 데이터 패킹 (기존 로직과 동일)
         let offset = headerSize;
@@ -1021,6 +1125,42 @@ export class Renderer {
             offset += torusStride;
         }
 
+        // Bézier patches
+        if (scene.bezierPatches) {
+            for (const patch of scene.bezierPatches) {
+                // Pack 16 control points (48 floats)
+                // Convert from 4x4 matrix to flat array of 16 points
+                for (let row = 0; row < 4; row++) {
+                    for (let col = 0; col < 4; col++) {
+                        const cp = patch.controlPoints[row][col];
+                        const idx = row * 4 + col;
+                        sceneData[offset + idx * 3 + 0] = cp[0];
+                        sceneData[offset + idx * 3 + 1] = cp[1];
+                        sceneData[offset + idx * 3 + 2] = cp[2];
+                    }
+                }
+                offset += 48; // 16 control points * 3 floats each
+                
+                // Pack bounding box (min and max corners - 8 floats with padding)
+                sceneData[offset + 0] = patch.boundingBox.min[0];
+                sceneData[offset + 1] = patch.boundingBox.min[1];
+                sceneData[offset + 2] = patch.boundingBox.min[2];
+                sceneData[offset + 3] = 0; // padding
+                sceneData[offset + 4] = patch.boundingBox.max[0];
+                sceneData[offset + 5] = patch.boundingBox.max[1];
+                sceneData[offset + 6] = patch.boundingBox.max[2];
+                sceneData[offset + 7] = 0; // padding
+                offset += 8;
+                
+                // Pack color and material (4 floats)
+                sceneData[offset + 0] = patch.color[0];
+                sceneData[offset + 1] = patch.color[1];
+                sceneData[offset + 2] = patch.color[2];
+                sceneData[offset + 3] = patch.material.type;
+                offset += 4;
+            }
+        }
+
         // 기존 버퍼가 충분히 크면 재사용, 아니면 새로 생성
         if (!this.sceneBuffer || this.sceneBuffer.size < sceneData.byteLength) {
             if (this.sceneBuffer) {
@@ -1058,6 +1198,10 @@ export class Renderer {
                     {
                         binding: 5,
                         resource: { buffer: this.primitiveIndexBuffer || this.createDummyBuffer() }
+                    },
+                    {
+                        binding: 6,
+                        resource: { buffer: this.primitiveInfoBuffer || this.createDummyBuffer() }
                     }
                 ]
             });
@@ -1097,6 +1241,10 @@ export class Renderer {
                     {
                         binding: 5,
                         resource: { buffer: this.primitiveIndexBuffer }
+                    },
+                    {
+                        binding: 6,
+                        resource: { buffer: this.primitiveInfoBuffer }
                     }
                 ]
             });
@@ -1215,6 +1363,31 @@ export class Renderer {
                 usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
             });
             this.device.queue.writeBuffer(this.primitiveIndexBuffer, 0, indexData);
+        }
+
+        // Primitive 정보 버퍼 생성 (타입 + 지오메트리 인덱스)
+        if (result.primitiveInfos.length > 0) {
+            // 각 primitive info는 4 uint32 (geometryType, geometryIndex, padding1, padding2)
+            const primitiveInfoData = new Uint32Array(result.primitiveInfos.length * 4);
+            
+            for (let i = 0; i < result.primitiveInfos.length; i++) {
+                const info = result.primitiveInfos[i];
+                const offset = i * 4;
+                
+                primitiveInfoData[offset + 0] = info.type;      // geometryType
+                primitiveInfoData[offset + 1] = info.index;     // geometryIndex
+                primitiveInfoData[offset + 2] = 0;              // padding1
+                primitiveInfoData[offset + 3] = 0;              // padding2
+            }
+
+            if (this.primitiveInfoBuffer) {
+                this.primitiveInfoBuffer.destroy();
+            }
+            this.primitiveInfoBuffer = this.device.createBuffer({
+                size: Math.max(primitiveInfoData.byteLength, 16), // 최소 16 bytes
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+            this.device.queue.writeBuffer(this.primitiveInfoBuffer, 0, primitiveInfoData);
         }
 
         console.log(`BVH built: ${this.bvhNodes.length} nodes, ${this.bvhPrimitiveIndices.length} primitives`);

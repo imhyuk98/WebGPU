@@ -12,31 +12,35 @@ fn get_num_boxes() -> u32 {
 }
 
 fn get_num_planes() -> u32 {
-    return u32(scene_buffer[3]);  // 헤더의 4번째 요소
+    return u32(scene_buffer[3]);  // ?�더??4번째 ?�소
 }
 
 fn get_num_circles() -> u32 {
-    return u32(scene_buffer[4]);  // 헤더의 5번째 요소
+    return u32(scene_buffer[4]);  // ?�더??5번째 ?�소
 }
 
 fn get_num_ellipses() -> u32 {
-    return u32(scene_buffer[5]);  // 헤더의 6번째 요소
+    return u32(scene_buffer[5]);  // ?�더??6번째 ?�소
 }
 
 fn get_num_lines() -> u32 {
-    return u32(scene_buffer[6]);  // 헤더의 7번째 요소
+    return u32(scene_buffer[6]);  // ?�더??7번째 ?�소
 }
 
 fn get_num_cones() -> u32 {
-    return u32(scene_buffer[7]);  // 헤더의 8번째 요소
+    return u32(scene_buffer[7]);  // ?�더??8번째 ?�소
 }
 
 fn get_num_toruses() -> u32 {
-    return u32(scene_buffer[8]);  // 헤더의 9번째 요소
+    return u32(scene_buffer[8]);  // ?�더??9번째 ?�소
+}
+
+fn get_num_bezier_patches() -> u32 {
+    return u32(scene_buffer[9]);  // ?�더??10번째 ?�소
 }
 
 fn get_sphere(index: u32) -> Sphere {
-    let offset = 12u + index * 8u; // Header(12) + previous spheres
+    let offset = 13u + index * 8u; // Header(13) + previous spheres
     var s: Sphere;
     s.center = vec3<f32>(scene_buffer[offset], scene_buffer[offset + 1], scene_buffer[offset + 2]);
     s.radius = scene_buffer[offset + 3];
@@ -47,7 +51,7 @@ fn get_sphere(index: u32) -> Sphere {
 
 fn get_cylinder(index: u32) -> Cylinder {
     let num_spheres = get_num_spheres();
-    let start_of_cylinders = 12u + num_spheres * 8u;
+    let start_of_cylinders = 13u + num_spheres * 8u;
     let offset = start_of_cylinders + index * 12u; // Use correct stride for cylinders
     var c: Cylinder;
     c.p1 = vec3<f32>(scene_buffer[offset], scene_buffer[offset + 1], scene_buffer[offset + 2]);
@@ -62,8 +66,8 @@ fn get_box(index: u32) -> Box {
     let num_spheres = get_num_spheres();
     let num_cylinders = get_num_cylinders();
     
-    // Offset calculation: header(12) + spheres + cylinders + boxes
-    let offset = 12u + num_spheres * 8u + num_cylinders * 12u + index * 16u;
+    // Offset calculation: header(13) + spheres + cylinders + boxes
+    let offset = 13u + num_spheres * 8u + num_cylinders * 12u + index * 16u;
     
     var box: Box;
     box.center = vec3<f32>(scene_buffer[offset + 0u], scene_buffer[offset + 1u], scene_buffer[offset + 2u]);
@@ -79,11 +83,11 @@ fn get_plane(index: u32) -> Plane {
     let num_cylinders = get_num_cylinders();
     let num_boxes = get_num_boxes();
     
-    let offset = 12u + 
+    let offset = 13u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
-                 index * 20u;  // planeStride = 20 (16바이트 단위로 맞춤)
+                 index * 20u;  // planeStride = 20 (16바이트 정렬에 맞춤)
     
     var plane: Plane;
     plane.center = vec3<f32>(scene_buffer[offset + 0u], scene_buffer[offset + 1u], scene_buffer[offset + 2u]);
@@ -96,7 +100,7 @@ fn get_plane(index: u32) -> Plane {
     // offset + 15는 padding
     plane.color = vec3<f32>(scene_buffer[offset + 16u], scene_buffer[offset + 17u], scene_buffer[offset + 18u]);
     plane.materialType = i32(scene_buffer[offset + 19u]);
-    // offset + 20은 padding
+    // offset + 20?� padding
     return plane;
 }
 
@@ -106,7 +110,7 @@ fn get_circle(index: u32) -> Circle {
     let num_boxes = get_num_boxes();
     let num_planes = get_num_planes();
     
-    let offset = 12u + 
+    let offset = 13u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -131,7 +135,7 @@ fn get_ellipse(index: u32) -> Ellipse {
     let num_planes = get_num_planes();
     let num_circles = get_num_circles();
     
-    let offset = 12u + 
+    let offset = 13u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -144,14 +148,14 @@ fn get_ellipse(index: u32) -> Ellipse {
     // offset + 3은 padding
     ellipse.radiusA = scene_buffer[offset + 4u];
     ellipse.radiusB = scene_buffer[offset + 5u];
-    // offset + 6, 7은 padding
+    // offset + 6, 7?� padding
     ellipse.normal = vec3<f32>(scene_buffer[offset + 8u], scene_buffer[offset + 9u], scene_buffer[offset + 10u]);
-    // offset + 11은 padding
+    // offset + 11?� padding
     ellipse.rotation = vec3<f32>(scene_buffer[offset + 12u], scene_buffer[offset + 13u], scene_buffer[offset + 14u]);
-    // offset + 15는 padding
+    // offset + 15??padding
     ellipse.color = vec3<f32>(scene_buffer[offset + 16u], scene_buffer[offset + 17u], scene_buffer[offset + 18u]);
     ellipse.materialType = i32(scene_buffer[offset + 19u]);
-    // offset + 20은 padding
+    // offset + 20?� padding
     return ellipse;
 }
 
@@ -163,7 +167,7 @@ fn get_line(index: u32) -> Line {
     let num_circles = get_num_circles();
     let num_ellipses = get_num_ellipses();
     
-    let offset = 12u + 
+    let offset = 13u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -192,7 +196,7 @@ fn get_cone(index: u32) -> Cone {
     let num_ellipses = get_num_ellipses();
     let num_lines = get_num_lines();
     
-    let offset = 12u + 
+    let offset = 13u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -200,7 +204,7 @@ fn get_cone(index: u32) -> Cone {
                  num_circles * 12u +
                  num_ellipses * 20u +
                  num_lines * 16u +
-                 index * 16u;  // Changed from 13u to 16u for 4-byte alignment  // coneStride = 13
+                 index * 16u;  // Changed from 13u to 16u for 4-byte alignment  // coneStride = 16
     
     var cone: Cone;
     cone.center = vec3<f32>(scene_buffer[offset + 0u], scene_buffer[offset + 1u], scene_buffer[offset + 2u]);
@@ -224,7 +228,7 @@ fn get_torus(index: u32) -> Torus {
     let num_lines = get_num_lines();
     let num_cones = get_num_cones();
     
-    let offset = 12u + 
+    let offset = 13u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
@@ -237,16 +241,70 @@ fn get_torus(index: u32) -> Torus {
     
     var torus: Torus;
     torus.center = vec3<f32>(scene_buffer[offset + 0u], scene_buffer[offset + 1u], scene_buffer[offset + 2u]);
-    // offset + 3은 padding
+    // offset + 3?� padding
     torus.rotation = vec3<f32>(scene_buffer[offset + 4u], scene_buffer[offset + 5u], scene_buffer[offset + 6u]);
-    // offset + 7은 padding
+    // offset + 7?� padding
     torus.majorRadius = scene_buffer[offset + 8u];
     torus.minorRadius = scene_buffer[offset + 9u];
     torus.angle = scene_buffer[offset + 10u];
-    // offset + 11은 padding (예전 endAngle 자리)
+    // offset + 11?� padding (?�전 endAngle ?�리)
     torus.color = vec3<f32>(scene_buffer[offset + 12u], scene_buffer[offset + 13u], scene_buffer[offset + 14u]);
     torus.materialType = i32(scene_buffer[offset + 15u]);
     return torus;
+}
+
+fn get_bezier_patch(index: u32) -> BezierPatch {
+    let num_spheres = get_num_spheres();
+    let num_cylinders = get_num_cylinders();
+    let num_boxes = get_num_boxes();
+    let num_planes = get_num_planes();
+    let num_circles = get_num_circles();
+    let num_ellipses = get_num_ellipses();
+    let num_lines = get_num_lines();
+    let num_cones = get_num_cones();
+    let num_toruses = get_num_toruses();
+    
+    let offset = 13u + 
+                 num_spheres * 8u + 
+                 num_cylinders * 12u + 
+                 num_boxes * 16u + 
+                 num_planes * 20u +
+                 num_circles * 12u +
+                 num_ellipses * 20u +
+                 num_lines * 16u +
+                 num_cones * 16u +
+                 num_toruses * 16u +
+                 index * 60u;  // bezierPatchStride = 60 (16 control points (48) + bounding box (8) + color+material (4))
+    
+    var bezierPatch: BezierPatch;
+    
+    // Read 16 control points (each is 3 floats)
+    for (var i = 0u; i < 16u; i = i + 1u) {
+        let cpOffset = offset + i * 3u;
+        bezierPatch.controlPoints[i] = vec3<f32>(
+            scene_buffer[cpOffset],
+            scene_buffer[cpOffset + 1u],
+            scene_buffer[cpOffset + 2u]
+        );
+    }
+    
+    // Read bounding box and other properties
+    let propOffset = offset + 48u; // 16 * 3 = 48 floats for control points
+    bezierPatch.minCorner = vec3<f32>(scene_buffer[propOffset], scene_buffer[propOffset + 1u], scene_buffer[propOffset + 2u]);
+    // propOffset + 3 is padding
+    bezierPatch.maxCorner = vec3<f32>(scene_buffer[propOffset + 4u], scene_buffer[propOffset + 5u], scene_buffer[propOffset + 6u]);
+    // propOffset + 7 is padding
+    
+    // Color is at propOffset + 8 (after 8 floats of bounding box)
+    let colorOffset = propOffset + 8u;
+    let colorFromBuffer = vec3<f32>(scene_buffer[colorOffset], scene_buffer[colorOffset + 1u], scene_buffer[colorOffset + 2u]);
+    bezierPatch.color = colorFromBuffer;
+    bezierPatch.materialType = i32(scene_buffer[colorOffset + 3u]);
+    
+    // Now use the actual color instead of debug info
+    debug_color = colorFromBuffer;
+    
+    return bezierPatch;
 }
 
 // BVH access functions

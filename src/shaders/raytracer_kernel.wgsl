@@ -24,6 +24,10 @@ struct Camera {
 // BVH buffers
 @group(0) @binding(4) var<storage, read> bvh_buffer: array<f32>;
 @group(0) @binding(5) var<storage, read> primitive_index_buffer: array<u32>;
+@group(0) @binding(6) var<storage, read> primitive_info_buffer: array<BVHPrimitiveInfo>;
+
+// Debug variable to inspect color values
+var<private> debug_color: vec3<f32>;
 
 // A simple pseudo-random number generator
 fn pcg(v_in: u32) -> u32 {
@@ -114,176 +118,155 @@ fn test_primitive_intersection(ray: Ray, primitive_index: u32) -> Hit {
     hit.t = -1.0;
     hit.materialType = -1;
     
-    // For now, we'll use the original sequential testing
-    // This is a simplified version - you'd need to track primitive types
-    // and indices properly in the BVH construction
+    // Get primitive info (type and geometry index)
+    let primitive_info = primitive_info_buffer[primitive_index];
+    let geometry_type = primitive_info.geometryType;
+    let geometry_index = primitive_info.geometryIndex;
     
-    let num_spheres = get_num_spheres();
-    let num_cylinders = get_num_cylinders();
-    let num_boxes = get_num_boxes();
-    let num_planes = get_num_planes();
-    let num_circles = get_num_circles();
-    let num_ellipses = get_num_ellipses();
-    let num_lines = get_num_lines();
-    let num_cones = get_num_cones();
-    let num_toruses = get_num_toruses();
-    
-    var current_offset = 0u;
-    
-    // Test spheres
-    if (primitive_index < num_spheres) {
-        let sphere = get_sphere(primitive_index);
-        let t = ray_sphere_intersect(ray, sphere);
-        if (t > 0.0) {
-            hit.t = t;
-            let hit_point = ray.origin + ray.direction * t;
-            hit.normal = normalize(hit_point - sphere.center);
-            hit.color = sphere.color;
-            hit.materialType = sphere.materialType;
-        }
-        return hit;
-    }
-    current_offset = current_offset + num_spheres;
-    
-    // Test cylinders
-    if (primitive_index < current_offset + num_cylinders) {
-        let cylinder_index = primitive_index - current_offset;
-        let cylinder = get_cylinder(cylinder_index);
-        let t = ray_cylinder_intersect(ray, cylinder);
-        if (t > 0.0) {
-            hit.t = t;
-            let hit_point = ray.origin + ray.direction * t;
-            // Calculate cylinder normal
-            let p1 = cylinder.p1;
-            let ba = cylinder.p2 - p1;
-            let oc = hit_point - p1;
-            let baba = dot(ba, ba);
-            let y = dot(oc, ba);
-            
-            if (y < 0.01) {
-                hit.normal = -normalize(ba);
-            } else if (y > baba - 0.01) {
-                hit.normal = normalize(ba);
-            } else {
-                let p = oc - ba * (y / baba);
-                hit.normal = normalize(p);
+    // Test based on geometry type
+    switch (geometry_type) {
+        case 0u: { // SPHERE
+            let sphere = get_sphere(geometry_index);
+            let t = ray_sphere_intersect(ray, sphere);
+            if (t > 0.0) {
+                hit.t = t;
+                let hit_point = ray.origin + ray.direction * t;
+                hit.normal = normalize(hit_point - sphere.center);
+                hit.color = sphere.color;
+                hit.materialType = sphere.materialType;
             }
-            hit.color = cylinder.color;
-            hit.materialType = cylinder.materialType;
         }
-        return hit;
-    }
-    current_offset = current_offset + num_cylinders;
-    
-    // Test boxes
-    if (primitive_index < current_offset + num_boxes) {
-        let box_index = primitive_index - current_offset;
-        let box = get_box(box_index);
-        let t = ray_box_intersect(ray, box);
-        if (t > 0.0) {
-            hit.t = t;
-            let hit_point = ray.origin + ray.direction * t;
-            hit.normal = calculate_box_normal(box, hit_point);
-            hit.color = box.color;
-            hit.materialType = box.materialType;
+        case 1u: { // CYLINDER
+            let cylinder = get_cylinder(geometry_index);
+            let t = ray_cylinder_intersect(ray, cylinder);
+            if (t > 0.0) {
+                hit.t = t;
+                let hit_point = ray.origin + ray.direction * t;
+                // Calculate cylinder normal
+                let p1 = cylinder.p1;
+                let ba = cylinder.p2 - p1;
+                let oc = hit_point - p1;
+                let baba = dot(ba, ba);
+                let y = dot(oc, ba);
+                
+                if (y < 0.01) {
+                    hit.normal = -normalize(ba);
+                } else if (y > baba - 0.01) {
+                    hit.normal = normalize(ba);
+                } else {
+                    let p = oc - ba * (y / baba);
+                    hit.normal = normalize(p);
+                }
+                hit.color = cylinder.color;
+                hit.materialType = cylinder.materialType;
+            }
         }
-        return hit;
-    }
-    current_offset = current_offset + num_boxes;
-    
-    // Test planes
-    if (primitive_index < current_offset + num_planes) {
-        let plane_index = primitive_index - current_offset;
-        let plane = get_plane(plane_index);
-        let t = ray_plane_intersect(ray, plane);
-        if (t > 0.0) {
-            hit.t = t;
-            let hit_point = ray.origin + ray.direction * t;
-            hit.normal = calculate_plane_normal(plane, hit_point);
-            hit.color = plane.color;
-            hit.materialType = plane.materialType;
+        case 2u: { // BOX
+            let box = get_box(geometry_index);
+            let t = ray_box_intersect(ray, box);
+            if (t > 0.0) {
+                hit.t = t;
+                let hit_point = ray.origin + ray.direction * t;
+                hit.normal = calculate_box_normal(box, hit_point);
+                hit.color = box.color;
+                hit.materialType = box.materialType;
+            }
         }
-        return hit;
-    }
-    current_offset = current_offset + num_planes;
-    
-    // Test circles
-    if (primitive_index < current_offset + num_circles) {
-        let circle_index = primitive_index - current_offset;
-        let circle = get_circle(circle_index);
-        let t = ray_circle_intersect(ray, circle);
-        if (t > 0.0) {
-            hit.t = t;
-            let hit_point = ray.origin + ray.direction * t;
-            hit.normal = calculate_circle_normal(circle, hit_point);
-            hit.color = circle.color;
-            hit.materialType = circle.materialType;
+        case 3u: { // PLANE
+            let plane = get_plane(geometry_index);
+            let t = ray_plane_intersect(ray, plane);
+            if (t > 0.0) {
+                hit.t = t;
+                let hit_point = ray.origin + ray.direction * t;
+                hit.normal = calculate_plane_normal(plane, hit_point);
+                hit.color = plane.color;
+                hit.materialType = plane.materialType;
+            }
         }
-        return hit;
-    }
-    current_offset = current_offset + num_circles;
-    
-    // Test ellipses
-    if (primitive_index < current_offset + num_ellipses) {
-        let ellipse_index = primitive_index - current_offset;
-        let ellipse = get_ellipse(ellipse_index);
-        let t = ray_ellipse_intersect(ray, ellipse);
-        if (t > 0.0) {
-            hit.t = t;
-            let hit_point = ray.origin + ray.direction * t;
-            hit.normal = calculate_ellipse_normal(ellipse, hit_point);
-            hit.color = ellipse.color;
-            hit.materialType = ellipse.materialType;
+        case 4u: { // CIRCLE
+            let circle = get_circle(geometry_index);
+            let t = ray_circle_intersect(ray, circle);
+            if (t > 0.0) {
+                hit.t = t;
+                let hit_point = ray.origin + ray.direction * t;
+                hit.normal = calculate_circle_normal(circle, hit_point);
+                hit.color = circle.color;
+                hit.materialType = circle.materialType;
+            }
         }
-        return hit;
-    }
-    current_offset = current_offset + num_ellipses;
-    
-    // Test lines
-    if (primitive_index < current_offset + num_lines) {
-        let line_index = primitive_index - current_offset;
-        let line = get_line(line_index);
-        let t = ray_line_intersect(ray, line);
-        if (t > 0.0) {
-            hit.t = t;
-            let hit_point = ray.origin + ray.direction * t;
-            hit.normal = calculate_line_normal(line, hit_point);
-            hit.color = line.color;
-            hit.materialType = line.materialType;
+        case 5u: { // ELLIPSE
+            let ellipse = get_ellipse(geometry_index);
+            let t = ray_ellipse_intersect(ray, ellipse);
+            if (t > 0.0) {
+                hit.t = t;
+                let hit_point = ray.origin + ray.direction * t;
+                hit.normal = calculate_ellipse_normal(ellipse, hit_point);
+                hit.color = ellipse.color;
+                hit.materialType = ellipse.materialType;
+            }
         }
-        return hit;
-    }
-    current_offset = current_offset + num_lines;
-    
-    // Test cones
-    if (primitive_index < current_offset + num_cones) {
-        let cone_index = primitive_index - current_offset;
-        let cone = get_cone(cone_index);
-        let t = ray_cone_intersect(ray, cone);
-        if (t > 0.0) {
-            hit.t = t;
-            let hit_point = ray.origin + ray.direction * t;
-            hit.normal = calculate_cone_normal(cone, hit_point);
-            hit.color = cone.color;
-            hit.materialType = cone.materialType;
+        case 6u: { // LINE
+            let line = get_line(geometry_index);
+            let t = ray_line_intersect(ray, line);
+            if (t > 0.0) {
+                hit.t = t;
+                let hit_point = ray.origin + ray.direction * t;
+                hit.normal = calculate_line_normal(line, hit_point);
+                hit.color = line.color;
+                hit.materialType = line.materialType;
+            }
         }
-        return hit;
-    }
-    current_offset = current_offset + num_cones;
-    
-    // Test toruses
-    if (primitive_index < current_offset + num_toruses) {
-        let torus_index = primitive_index - current_offset;
-        let torus = get_torus(torus_index);
-        let t = ray_torus_intersect(ray, torus);
-        if (t > 0.0) {
-            hit.t = t;
-            let hit_point = ray.origin + ray.direction * t;
-            hit.normal = calculate_torus_normal(torus, hit_point);
-            hit.color = torus.color;
-            hit.materialType = torus.materialType;
+        case 7u: { // CONE
+            let cone = get_cone(geometry_index);
+            let t = ray_cone_intersect(ray, cone);
+            if (t > 0.0) {
+                hit.t = t;
+                let hit_point = ray.origin + ray.direction * t;
+                hit.normal = calculate_cone_normal(cone, hit_point);
+                hit.color = cone.color;
+                hit.materialType = cone.materialType;
+            }
         }
-        return hit;
+        case 8u: { // TORUS
+            let torus = get_torus(geometry_index);
+            let t = ray_torus_intersect(ray, torus);
+            if (t > 0.0) {
+                hit.t = t;
+                let hit_point = ray.origin + ray.direction * t;
+                hit.normal = calculate_torus_normal(torus, hit_point);
+                hit.color = torus.color;
+                hit.materialType = torus.materialType;
+            }
+        }
+        case 9u: { // BEZIER_PATCH
+            let bezierPatch = get_bezier_patch(geometry_index);
+            
+            // 실제 베지어 패치 인터섹션 사용
+            let intersection_result = intersect_bezier_patch_with_uv(ray, bezierPatch, 0.001, 1000.0);
+            if (intersection_result.w > 0.5) { // 히트
+                hit.t = intersection_result.x;
+                let hit_point = ray.origin + ray.direction * hit.t;
+                
+                // 정확한 UV 파라미터로 법선 계산
+                let u = intersection_result.y;
+                let v = intersection_result.z;
+                let surface_normal = calculate_bezier_patch_normal(bezierPatch, u, v);
+                
+                // 카메라 방향에 따라 법선 방향 조정
+                if (dot(surface_normal, ray.direction) > 0.0) {
+                    hit.normal = -surface_normal;
+                } else {
+                    hit.normal = surface_normal;
+                }
+                
+                // Debug: Show the actual color value read from buffer
+                hit.color = debug_color;  // This will show what we actually read from the buffer
+                hit.materialType = bezierPatch.materialType;
+            }
+        }
+        default: {
+            // Unknown geometry type
+        }
     }
     
     return hit;
@@ -481,6 +464,34 @@ fn trace(r: Ray) -> vec3<f32> {
                     closest_hit.normal = torus_normal;
                     closest_hit.color = torus.color;
                     closest_hit.materialType = torus.materialType;
+                }
+            }
+
+            // Bézier patches
+            let num_bezier_patches = get_num_bezier_patches();
+            for (var i = 0u; i < num_bezier_patches; i = i + 1u) {
+                let bezierPatch = get_bezier_patch(i);
+                let intersection_result = intersect_bezier_patch_with_uv(current_ray, bezierPatch, 0.001, 1000.0);
+
+                if (intersection_result.w > 0.5 && intersection_result.x < closest_hit.t) { // 히트 확인
+                    closest_hit.t = intersection_result.x;
+                    let hit_point = current_ray.origin + current_ray.direction * closest_hit.t;
+                    
+                    // 정확한 UV 파라미터로 법선 계산
+                    let u = intersection_result.y;
+                    let v = intersection_result.z;
+                    let surface_normal = calculate_bezier_patch_normal(bezierPatch, u, v);
+                    
+                    // 카메라 방향에 따라 법선 방향 조정
+                    if (dot(surface_normal, current_ray.direction) > 0.0) {
+                        closest_hit.normal = -surface_normal;
+                    } else {
+                        closest_hit.normal = surface_normal;
+                    }
+                    
+                    // Debug: Show the actual color value read from buffer
+                    closest_hit.color = debug_color;  // This will show what we actually read from the buffer
+                    closest_hit.materialType = bezierPatch.materialType;
                 }
             }
         }

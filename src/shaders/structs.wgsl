@@ -91,6 +91,18 @@ struct Torus {
     materialType: i32,      // 재질 타입
 }
 
+struct BezierPatch {
+    // Control points stored as 16 consecutive vec3s (4x4 matrix flattened)
+    controlPoints: array<vec3<f32>, 16>,
+    // Bounding box
+    minCorner: vec3<f32>,
+    padding1: f32,
+    maxCorner: vec3<f32>,
+    padding2: f32,
+    color: vec3<f32>,
+    materialType: i32,
+}
+
 struct Cone {
     center: vec3<f32>,      // 원뿔의 꼭짓점
     padding1: f32,
@@ -129,4 +141,12 @@ struct BVHNode {
     leftChild: f32,           // Left child index (or first primitive index if leaf)
     maxCorner: vec3<f32>,     // AABB maximum corner  
     primitiveCount: f32,      // Number of primitives (0 for internal nodes)
+};
+
+// BVH Primitive info structure
+struct BVHPrimitiveInfo {
+    geometryType: u32,        // 0=Sphere, 1=Cylinder, 2=Box, etc.
+    geometryIndex: u32,       // Index within the specific geometry array
+    padding1: u32,
+    padding2: u32,
 };

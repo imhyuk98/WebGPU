@@ -11,7 +11,7 @@ export class BVHBuilder {
 
     constructor() {}
 
-    buildBVH(scene: Scene): { nodes: BVHNode[], primitiveIndices: number[] } {
+    buildBVH(scene: Scene): { nodes: BVHNode[], primitiveIndices: number[], primitiveInfos: { type: number, index: number }[] } {
         this.nodes = [];
         this.primitives = [];
         this.primitiveIndices = [];
@@ -20,10 +20,10 @@ export class BVHBuilder {
         // 모든 geometry를 primitive로 변환
         this.collectPrimitives(scene);
         
-        console.log(`BVH: Collected ${this.primitives.length} primitives`);
+        // console.log(`BVH: Collected ${this.primitives.length} primitives`);
         
         if (this.primitives.length === 0) {
-            return { nodes: [], primitiveIndices: [] };
+            return { nodes: [], primitiveIndices: [], primitiveInfos: [] };
         }
 
         // primitive indices 초기화
@@ -41,66 +41,98 @@ export class BVHBuilder {
         this.updateNodeBounds(0, 0, this.primitives.length);
 
         // 처음 몇 개 primitive의 위치 확인
-        console.log("First 5 primitives:");
-        for (let i = 0; i < Math.min(5, this.primitives.length); i++) {
-            const p = this.primitives[i];
-            console.log(`  ${i}: center=${p.center}, type=${p.type}`);
-        }
+        // console.log("First 5 primitives:");
+        // for (let i = 0; i < Math.min(5, this.primitives.length); i++) {
+        //     const p = this.primitives[i];
+        //     console.log(`  ${i}: center=${p.center}, type=${p.type}`);
+        // }
 
         // 재귀적으로 분할
         this.subdivide(0, 0, this.primitives.length);
 
+        // Primitive 정보 배열 생성
+        const primitiveInfos = this.primitives.map(primitive => ({
+            type: primitive.type,
+            index: primitive.index
+        }));
+
         return { 
             nodes: this.nodes.slice(0, this.nodesUsed), 
-            primitiveIndices: this.primitiveIndices 
+            primitiveIndices: this.primitiveIndices,
+            primitiveInfos: primitiveInfos
         };
     }
 
     private collectPrimitives(scene: Scene): void {
         // Spheres
-        scene.spheres.forEach((sphere, index) => {
-            this.primitives.push(BVHGeometry.createSpherePrimitive(sphere, index));
-        });
+        if (scene.spheres) {
+            scene.spheres.forEach((sphere, index) => {
+                this.primitives.push(BVHGeometry.createSpherePrimitive(sphere, index));
+            });
+        }
 
         // Cylinders
-        scene.cylinders.forEach((cylinder, index) => {
-            this.primitives.push(BVHGeometry.createCylinderPrimitive(cylinder, index));
-        });
+        if (scene.cylinders) {
+            scene.cylinders.forEach((cylinder, index) => {
+                this.primitives.push(BVHGeometry.createCylinderPrimitive(cylinder, index));
+            });
+        }
 
         // Boxes
-        scene.boxes.forEach((box, index) => {
-            this.primitives.push(BVHGeometry.createBoxPrimitive(box, index));
-        });
+        if (scene.boxes) {
+            scene.boxes.forEach((box, index) => {
+                this.primitives.push(BVHGeometry.createBoxPrimitive(box, index));
+            });
+        }
 
         // Planes
-        scene.planes.forEach((plane, index) => {
-            this.primitives.push(BVHGeometry.createPlanePrimitive(plane, index));
-        });
+        if (scene.planes) {
+            scene.planes.forEach((plane, index) => {
+                this.primitives.push(BVHGeometry.createPlanePrimitive(plane, index));
+            });
+        }
 
         // Circles
-        scene.circles.forEach((circle, index) => {
-            this.primitives.push(BVHGeometry.createCirclePrimitive(circle, index));
-        });
+        if (scene.circles) {
+            scene.circles.forEach((circle, index) => {
+                this.primitives.push(BVHGeometry.createCirclePrimitive(circle, index));
+            });
+        }
 
         // Ellipses
-        scene.ellipses.forEach((ellipse, index) => {
-            this.primitives.push(BVHGeometry.createEllipsePrimitive(ellipse, index));
-        });
+        if (scene.ellipses) {
+            scene.ellipses.forEach((ellipse, index) => {
+                this.primitives.push(BVHGeometry.createEllipsePrimitive(ellipse, index));
+            });
+        }
 
         // Lines
-        scene.lines.forEach((line, index) => {
-            this.primitives.push(BVHGeometry.createLinePrimitive(line, index));
-        });
+        if (scene.lines) {
+            scene.lines.forEach((line, index) => {
+                this.primitives.push(BVHGeometry.createLinePrimitive(line, index));
+            });
+        }
 
         // Cones
-        scene.cones.forEach((cone, index) => {
-            this.primitives.push(BVHGeometry.createConePrimitive(cone, index));
-        });
+        if (scene.cones) {
+            scene.cones.forEach((cone, index) => {
+                this.primitives.push(BVHGeometry.createConePrimitive(cone, index));
+            });
+        }
 
         // Toruses
-        scene.toruses.forEach((torus, index) => {
-            this.primitives.push(BVHGeometry.createTorusPrimitive(torus, index));
-        });
+        if (scene.toruses) {
+            scene.toruses.forEach((torus, index) => {
+                this.primitives.push(BVHGeometry.createTorusPrimitive(torus, index));
+            });
+        }
+
+        // Bézier Patches
+        if (scene.bezierPatches) {
+            scene.bezierPatches.forEach((patch, index) => {
+                this.primitives.push(BVHGeometry.createBezierPatchPrimitive(patch, index));
+            });
+        }
     }
 
     private updateNodeBounds(nodeIndex: number, first: number, count: number): void {
@@ -120,11 +152,11 @@ export class BVHBuilder {
     private subdivide(nodeIndex: number, first: number, count: number): void {
         const node = this.nodes[nodeIndex];
 
-        console.log(`Subdivide node ${nodeIndex}: first=${first}, count=${count}`);
+        // console.log(`Subdivide node ${nodeIndex}: first=${first}, count=${count}`);
 
         // 종료 조건: 적은 수의 primitive 또는 분할 불가능
         if (count <= 4) { // 4개 이하면 리프 노드로 만들기
-            console.log(`  Leaf node: ${count} primitives`);
+            // console.log(`  Leaf node: ${count} primitives`);
             node.leftChild = first;
             node.primitiveCount = count;
             return;
@@ -133,21 +165,21 @@ export class BVHBuilder {
         // SAH(Surface Area Heuristic)를 사용한 최적 분할점 찾기
         const bestSplit = this.findBestSplit(first, count);
         
-        console.log(`  Best split: axis=${bestSplit.axis}, pos=${bestSplit.pos}, cost=${bestSplit.cost}`);
+        // console.log(`  Best split: axis=${bestSplit.axis}, pos=${bestSplit.pos}, cost=${bestSplit.cost}`);
         
         // 큰 노드는 강제로 분할
         const shouldForceSplit = count > 32;
         
         if (!shouldForceSplit && bestSplit.cost >= count * 0.8) {
             // 분할하는 것보다 그냥 두는 게 나은 경우
-            console.log(`  No split benefit, making leaf with ${count} primitives`);
+            // console.log(`  No split benefit, making leaf with ${count} primitives`);
             node.leftChild = first;
             node.primitiveCount = count;
             return;
         }
         
         if (shouldForceSplit) {
-            console.log(`  Force splitting large node with ${count} primitives`);
+            // console.log(`  Force splitting large node with ${count} primitives`);
         }
 
         // 분할점에 따라 primitive들을 정렬

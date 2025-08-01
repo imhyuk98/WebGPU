@@ -1,6 +1,6 @@
-import { Scene, Sphere, Cylinder, Box, Plane, Circle, Ellipse, Line, ConeGeometry, Torus, TorusInput } from "./renderer";
+import { Scene, Sphere, Cylinder, Box, Plane, Circle, Ellipse, Line, ConeGeometry, Torus, TorusInput, BezierPatch } from "./renderer";
 import { Material, MaterialType, MaterialTemplates } from "./material";
-import { vec3, normalize, toRadians } from "./utils";
+import { vec3, normalize, toRadians, createTestBezierPatch } from "./utils";
 
 // --- Helper Functions ---
 function random_double(min: number, max: number): number {
@@ -51,8 +51,9 @@ export function createBasicScene(): Scene {
         ellipses: [],
         lines: [],
         cones: [],
-        toruses: []
-    };
+        toruses: [],
+        bezierPatches: []
+    } as Scene;
 
     // 바닥 평면
     scene.planes.push({
@@ -94,6 +95,18 @@ export function createBasicScene(): Scene {
         material: MaterialTemplates.MATTE
     } as ConeGeometry);
 
+    // 테스트용 Bézier patch 추가 - 정면에 크게 배치
+    const testPatch = createTestBezierPatch([0, 0, -2], 4.0); // 카메라 바로 앞, 더 큰 크기
+    scene.bezierPatches.push(testPatch);
+
+    // 디버깅용: 같은 위치에 노란색 구체 추가
+    scene.spheres.push({
+        center: [0, 0, -2],
+        radius: 0.5,
+        color: [1.0, 1.0, 0.0], // 같은 노란색
+        material: MaterialTemplates.MATTE
+    });
+
     return scene;
 }
 
@@ -107,8 +120,9 @@ export function createRandomScene(): Scene {
         ellipses: [],
         lines: [],
         cones: [],
-        toruses: []
-    };
+        toruses: [],
+        bezierPatches: []
+    } as Scene;
 
     // 바닥 구
     scene.spheres.push({
@@ -206,8 +220,9 @@ export function createMixedScene(): Scene {
         ellipses: [],
         lines: [],
         cones: [],
-        toruses: []
-    };
+        toruses: [],
+        bezierPatches: []
+    } as Scene;
 
     // 바닥 평면
     scene.planes.push({
@@ -266,8 +281,9 @@ export function createShowcaseScene(): Scene {
         ellipses: [],
         lines: [],
         cones: [],
-        toruses: []
-    };
+        toruses: [],
+        bezierPatches: []
+    } as Scene;
 
     // 🏠 바닥 평면 (회색) - 카메라 앞쪽 아래에 배치
     scene.planes.push({
@@ -391,6 +407,10 @@ export function createShowcaseScene(): Scene {
         material: MaterialTemplates.MATTE
     });
 
+    // 🔶 Bézier Patch - 더 가까운 위치에 배치
+    const testPatch = createTestBezierPatch([10, 0, -6], 2.0); // 더 가까이, 더 크게
+    scene.bezierPatches.push(testPatch);
+
     return scene;
 }
 
@@ -405,8 +425,9 @@ export function createMetalTestScene(): Scene {
         ellipses: [],
         lines: [],
         cones: [],
-        toruses: []
-    };
+        toruses: [],
+        bezierPatches: []
+    } as Scene;
 
     // 바닥 평면 (무광 회색)
     scene.planes.push({
@@ -578,8 +599,9 @@ function createTorusFieldScene(): Scene {
         ellipses: [],
         lines: [],
         cones: [],
-        toruses: toruses.map(convertTorusInput)
-    };
+        toruses: toruses.map(convertTorusInput),
+        bezierPatches: []
+    } as Scene;
 }
 
 // 성능 최적화된 125개 토러스 Scene
@@ -655,6 +677,7 @@ function createTorus1000Scene(): Scene {
         ellipses: [],
         lines: [],
         cones: [],
-        toruses: toruses.map(convertTorusInput)
-    };
+        toruses: toruses.map(convertTorusInput),
+        bezierPatches: []
+    } as Scene;
 }

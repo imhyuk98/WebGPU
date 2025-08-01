@@ -11,7 +11,8 @@ export enum GeometryType {
     ELLIPSE = 5,
     LINE = 6,
     CONE = 7,
-    TORUS = 8
+    TORUS = 8,
+    BEZIER_PATCH = 9
 }
 
 // BVH에서 사용할 통합 Primitive 인터페이스
@@ -198,6 +199,24 @@ export class BVHGeometry {
             index,
             aabb,
             center: [...center] as vec3
+        };
+    }
+
+    static createBezierPatchPrimitive(patch: any, index: number): BVHPrimitive {
+        const boundingBox = patch.boundingBox;
+        const center: vec3 = [
+            (boundingBox.min[0] + boundingBox.max[0]) * 0.5,
+            (boundingBox.min[1] + boundingBox.max[1]) * 0.5,
+            (boundingBox.min[2] + boundingBox.max[2]) * 0.5
+        ];
+        
+        const aabb = new AABB(boundingBox.min, boundingBox.max);
+        
+        return {
+            type: GeometryType.BEZIER_PATCH,
+            index,
+            aabb,
+            center
         };
     }
 }

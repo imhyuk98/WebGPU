@@ -14,7 +14,7 @@ class App {
 
     lastTime: number = 0;
     isRunning: boolean = false;
-    currentSceneType: SceneType = SceneType.TORUS_FIELD;
+    currentSceneType: SceneType = SceneType.SHOWCASE;
 
     constructor() {
         this.canvas = <HTMLCanvasElement> document.getElementById("gfx-main");
@@ -68,21 +68,19 @@ class App {
                     this.renderer.enableFrustumCulling = !this.renderer.enableFrustumCulling;
                     console.log(`Frustum Culling: ${this.renderer.enableFrustumCulling ? 'Enabled' : 'Disabled'}`);
                     break;
+                case 'b':
+                case 'B':
+                    // BVH 토글
+                    this.renderer.enableBVH = !this.renderer.enableBVH;
+                    console.log(`BVH: ${this.renderer.enableBVH ? 'Enabled' : 'Disabled'}`);
+                    // 씬을 다시 초기화해야 BVH 변경사항이 적용됨
+                    this.switchScene(this.currentSceneType);
+                    break;
                 default:
                     return; // 다른 키는 무시
             }
             event.preventDefault();
         });
-        
-        // 사용법 안내
-        console.log("=== Scene Switching Controls ===");
-        console.log("1: Showcase Scene");
-        console.log("2: Torus Field (1000 toruses)");
-        console.log("3: Basic Scene");
-        console.log("4: Mixed Scene");
-        console.log("5: Metal Test Scene");
-        console.log("F: Toggle Frustum Culling");
-        console.log("================================");
     }
 
     // Scene 전환
@@ -90,8 +88,6 @@ class App {
         if (newSceneType === this.currentSceneType) {
             return; // 같은 씬이면 무시
         }
-
-        console.log(`Switching to ${newSceneType} scene...`);
         this.currentSceneType = newSceneType;
         
         // 렌더링 일시정지

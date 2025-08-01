@@ -1,4 +1,5 @@
 // Vector math utilities for 3D calculations
+import { Material, MaterialTemplates } from "./material";
 
 // Helper types and functions for vector math
 export type vec3 = [number, number, number];
@@ -178,3 +179,201 @@ export const getBoundingSphereForTorus = (center: vec3, majorRadius: number, min
     center,
     radius: majorRadius + minorRadius
 });
+
+// === Bézier Patch Utilities ===
+
+// 4x4 control points matrix type
+export type ControlPointMatrix = vec3[][];
+
+// Bézier patch represented by 4x4 control points
+export interface BezierPatch {
+    controlPoints: ControlPointMatrix;  // 16 control points (4x4 matrix)
+    boundingBox: {
+        min: vec3;
+        max: vec3;
+    };
+    color: vec3;
+    material: Material;
+}
+
+// Evaluate Bézier patch at parameters (u, v) using de Casteljau algorithm
+export const evaluateBezierPatch = (patch: BezierPatch, u: number, v: number): {
+    point: vec3;
+    dPu: vec3;  // Partial derivative with respect to u
+    dPv: vec3;  // Partial derivative with respect to v
+} => {
+    // First pass: evaluate along v direction for each row
+    const rowCurves: vec3[] = [];
+    for (let i = 0; i < 4; i++) {
+        const cp = patch.controlPoints[i];
+        const a = lerp(cp[0], cp[1], v);
+        const b = lerp(cp[1], cp[2], v);
+        const c = lerp(cp[2], cp[3], v);
+        const d = lerp(a, b, v);
+        const e = lerp(b, c, v);
+        rowCurves[i] = lerp(d, e, v);
+    }
+
+    // Second pass: evaluate along u direction
+    const A = lerp(rowCurves[0], rowCurves[1], u);
+    const B = lerp(rowCurves[1], rowCurves[2], u);
+    const C = lerp(rowCurves[2], rowCurves[3], u);
+    const D = lerp(A, B, u);
+    const E = lerp(B, C, u);
+    const point = lerp(D, E, u);
+
+    // Calculate partial derivatives
+    const dPu = scale(subtract(E, D), 3);
+
+    // For dPv, evaluate along u direction first
+    const colCurves: vec3[] = [];
+    for (let j = 0; j < 4; j++) {
+        const a = lerp(patch.controlPoints[0][j], patch.controlPoints[1][j], u);
+        const b = lerp(patch.controlPoints[1][j], patch.controlPoints[2][j], u);
+        const c = lerp(patch.controlPoints[2][j], patch.controlPoints[3][j], u);
+        const d = lerp(a, b, u);
+        const e = lerp(b, c, u);
+        colCurves[j] = lerp(d, e, u);
+    }
+
+    const A2 = lerp(colCurves[0], colCurves[1], v);
+    const B2 = lerp(colCurves[1], colCurves[2], v);
+    const C2 = lerp(colCurves[2], colCurves[3], v);
+    const D2 = lerp(A2, B2, v);
+    const E2 = lerp(B2, C2, v);
+    const dPv = scale(subtract(E2, D2), 3);
+
+    return { point, dPu, dPv };
+};
+
+// Subdivide a Bézier patch into 4 sub-patches
+export const subdivideBezierPatch = (patch: BezierPatch): BezierPatch[] => {
+    const cp = patch.controlPoints;
+    
+    // Split horizontally first (u direction)
+    const leftHalf: ControlPointMatrix = [[], [], [], []];
+    const rightHalf: ControlPointMatrix = [[], [], [], []];
+
+    for (let j = 0; j < 4; j++) {
+        const a = cp[0][j];
+        const b = cp[1][j];
+        const c = cp[2][j];
+        const d = cp[3][j];
+
+        const ab = scale(add(a, b), 0.5);
+        const bc = scale(add(b, c), 0.5);
+        const cd = scale(add(c, d), 0.5);
+        const abc = scale(add(ab, bc), 0.5);
+        const bcd = scale(add(bc, cd), 0.5);
+        const abcd = scale(add(abc, bcd), 0.5);
+
+        leftHalf[0][j] = a;
+        leftHalf[1][j] = ab;
+        leftHalf[2][j] = abc;
+        leftHalf[3][j] = abcd;
+
+        rightHalf[0][j] = abcd;
+        rightHalf[1][j] = bcd;
+        rightHalf[2][j] = cd;
+        rightHalf[3][j] = d;
+    }
+
+    // Split each half vertically (v direction)
+    const subdivideVertically = (half: ControlPointMatrix): [ControlPointMatrix, ControlPointMatrix] => {
+        const bottom: ControlPointMatrix = [[], [], [], []];
+        const top: ControlPointMatrix = [[], [], [], []];
+
+        for (let i = 0; i < 4; i++) {
+            const a = half[i][0];
+            const b = half[i][1];
+            const c = half[i][2];
+            const d = half[i][3];
+
+            const ab = scale(add(a, b), 0.5);
+            const bc = scale(add(b, c), 0.5);
+            const cd = scale(add(c, d), 0.5);
+            const abc = scale(add(ab, bc), 0.5);
+            const bcd = scale(add(bc, cd), 0.5);
+            const abcd = scale(add(abc, bcd), 0.5);
+
+            bottom[i][0] = a;
+            bottom[i][1] = ab;
+            bottom[i][2] = abc;
+            bottom[i][3] = abcd;
+
+            top[i][0] = abcd;
+            top[i][1] = bcd;
+            top[i][2] = cd;
+            top[i][3] = d;
+        }
+
+        return [bottom, top];
+    };
+
+    const [leftBottom, leftTop] = subdivideVertically(leftHalf);
+    const [rightBottom, rightTop] = subdivideVertically(rightHalf);
+
+    // Calculate bounding boxes for each sub-patch
+    const calculateBoundingBox = (controlPoints: ControlPointMatrix) => {
+        let min: vec3 = [...controlPoints[0][0]] as vec3;
+        let max: vec3 = [...controlPoints[0][0]] as vec3;
+
+        for (let i = 0; i < 4; i++) {
+            for (let j = 0; j < 4; j++) {
+                const p = controlPoints[i][j];
+                min = [Math.min(min[0], p[0]), Math.min(min[1], p[1]), Math.min(min[2], p[2])];
+                max = [Math.max(max[0], p[0]), Math.max(max[1], p[1]), Math.max(max[2], p[2])];
+            }
+        }
+
+        return { min, max };
+    };
+
+    return [
+        { controlPoints: leftBottom, boundingBox: calculateBoundingBox(leftBottom), color: patch.color, material: patch.material },   // [0,0.5] × [0,0.5]
+        { controlPoints: rightBottom, boundingBox: calculateBoundingBox(rightBottom), color: patch.color, material: patch.material }, // [0.5,1] × [0,0.5]
+        { controlPoints: leftTop, boundingBox: calculateBoundingBox(leftTop), color: patch.color, material: patch.material },         // [0,0.5] × [0.5,1]
+        { controlPoints: rightTop, boundingBox: calculateBoundingBox(rightTop), color: patch.color, material: patch.material }        // [0.5,1] × [0.5,1]
+    ];
+};
+
+// Create a simple test Bézier patch
+export const createTestBezierPatch = (center: vec3, size: number): BezierPatch => {
+    const controlPoints: ControlPointMatrix = [[], [], [], []];
+    
+    // Create a curved surface instead of a flat plane
+    for (let i = 0; i < 4; i++) {
+        for (let j = 0; j < 4; j++) {
+            const x = center[0] + (i - 1.5) * size / 3;
+            const z = center[2] + (j - 1.5) * size / 3;
+            
+            // Add curvature - create a saddle shape or wave
+            const u = i / 3.0; // Parameter from 0 to 1
+            const v = j / 3.0; // Parameter from 0 to 1
+            
+            // Create a curved surface with some height variation
+            const y = center[1] + Math.sin(u * Math.PI) * Math.cos(v * Math.PI) * size * 0.3;
+            
+            controlPoints[i][j] = [x, y, z];
+        }
+    }
+
+    // Calculate bounding box
+    let min: vec3 = [...controlPoints[0][0]] as vec3;
+    let max: vec3 = [...controlPoints[0][0]] as vec3;
+
+    for (let i = 0; i < 4; i++) {
+        for (let j = 0; j < 4; j++) {
+            const p = controlPoints[i][j];
+            min = [Math.min(min[0], p[0]), Math.min(min[1], p[1]), Math.min(min[2], p[2])];
+            max = [Math.max(max[0], p[0]), Math.max(max[1], p[1]), Math.max(max[2], p[2])];
+        }
+    }
+
+    return {
+        controlPoints,
+        boundingBox: { min, max },
+        color: [0.8, 0.2, 0.2], // 원래 빨간색
+        material: MaterialTemplates.MATTE
+    };
+};

@@ -17,7 +17,7 @@ import { BVHNode } from "./bvh/node";
 import { BVHPrimitive } from "./bvh/geometry";
 
 // Re-export for use in other modules
-export { BezierPatch } from "./utils";
+export { BezierPatch, HermiteBezierPatch } from "./utils";
 
 // Data structures for scene objects
 export interface Sphere {

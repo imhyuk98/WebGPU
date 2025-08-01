@@ -185,13 +185,59 @@ export const getBoundingSphereForTorus = (center: vec3, majorRadius: number, min
 // 4x4 control points matrix type
 export type ControlPointMatrix = vec3[][];
 
-// Bézier patch represented by 4x4 control points
+// Standard Bézier patch represented by 4x4 control points
 export interface BezierPatch {
     controlPoints: ControlPointMatrix;  // 16 control points (4x4 matrix)
     boundingBox: {
         min: vec3;
         max: vec3;
     };
+    color: vec3;
+    material: Material;
+}
+
+// Advanced Hermite-style Bézier patch (like your reference code)
+export interface HermiteBezierPatch {
+    // Corner parameters (u,v)
+    corners: {
+        p00: { u: number; v: number; };  // P00: (u0, v0)
+        pM0: { u: number; v: number; };  // P_M0: (uM, v0)
+        p0N: { u: number; v: number; };  // P_0N: (u0, vN)
+        pMN: { u: number; v: number; };  // P_MN: (uM, vN)
+    };
+    
+    // Corner positions (XYZ ×4)
+    positions: {
+        p00: vec3;  // Position at (u0, v0)
+        pM0: vec3;  // Position at (uM, v0)
+        p0N: vec3;  // Position at (u0, vN)
+        pMN: vec3;  // Position at (uM, vN)
+    };
+    
+    // u-direction tangents (∂P/∂u) at corners (XYZ ×4)
+    uTangents: {
+        tu00: vec3;  // ∂P/∂u at (u0, v0)
+        tuM0: vec3;  // ∂P/∂u at (uM, v0)
+        tu0N: vec3;  // ∂P/∂u at (u0, vN)
+        tuMN: vec3;  // ∂P/∂u at (uM, vN)
+    };
+    
+    // v-direction tangents (∂P/∂v) at corners (XYZ ×4)
+    vTangents: {
+        tv00: vec3;  // ∂P/∂v at (u0, v0)
+        tvM0: vec3;  // ∂P/∂v at (uM, v0)
+        tv0N: vec3;  // ∂P/∂v at (u0, vN)
+        tvMN: vec3;  // ∂P/∂v at (uM, vN)
+    };
+    
+    // Mixed derivatives (∂²P/∂u∂v) at corners (XYZ ×4)
+    mixedDerivatives: {
+        tuv00: vec3;  // ∂²P/∂u∂v at (u0, v0)
+        tuvM0: vec3;  // ∂²P/∂u∂v at (uM, v0)
+        tuv0N: vec3;  // ∂²P/∂u∂v at (u0, vN)
+        tuvMN: vec3;  // ∂²P/∂u∂v at (uM, vN)
+    };
+    
     color: vec3;
     material: Material;
 }
@@ -375,5 +421,167 @@ export const createTestBezierPatch = (center: vec3, size: number): BezierPatch =
         boundingBox: { min, max },
         color: [0.8, 0.2, 0.2], // 원래 빨간색
         material: MaterialTemplates.MATTE
+    };
+};
+
+// Convert Hermite-style Bézier patch to standard 4x4 control points
+export const hermiteToBezierPatch = (hermite: HermiteBezierPatch): BezierPatch => {
+    // Extract corner data
+    const { p00, pM0, p0N, pMN } = hermite.positions;
+    const { tu00, tuM0, tu0N, tuMN } = hermite.uTangents;
+    const { tv00, tvM0, tv0N, tvMN } = hermite.vTangents;
+    const { tuv00, tuvM0, tuv0N, tuvMN } = hermite.mixedDerivatives;
+    
+    // Convert Hermite data to 4x4 Bézier control points using standard formulas
+    // This assumes unit parameter domain [0,1] x [0,1]
+    const controlPoints: ControlPointMatrix = [[], [], [], []];
+    
+    // Row 0 (v=0): P(u,0)
+    controlPoints[0][0] = [...p00] as vec3;                                    // P(0,0)
+    controlPoints[0][1] = add(p00, scale(tu00, 1/3)) as vec3;                 // P(0,0) + tu00/3
+    controlPoints[0][2] = subtract(pM0, scale(tuM0, 1/3)) as vec3;            // P(1,0) - tuM0/3
+    controlPoints[0][3] = [...pM0] as vec3;                                    // P(1,0)
+    
+    // Row 1: Intermediate row with v-tangent influence
+    const p01 = add(p00, scale(tv00, 1/3)) as vec3;                          // P(0,0) + tv00/3
+    const p11 = add(pM0, scale(tvM0, 1/3)) as vec3;                          // P(1,0) + tvM0/3
+    
+    controlPoints[1][0] = p01;
+    controlPoints[1][1] = add(add(p01, scale(tu00, 1/3)), scale(tuv00, 1/9)) as vec3;  // With mixed derivative
+    controlPoints[1][2] = add(subtract(p11, scale(tuM0, 1/3)), scale(tuvM0, 1/9)) as vec3;
+    controlPoints[1][3] = p11;
+    
+    // Row 2: Intermediate row approaching (u,1)
+    const p02 = subtract(p0N, scale(tv0N, 1/3)) as vec3;                     // P(0,1) - tv0N/3
+    const p12 = subtract(pMN, scale(tvMN, 1/3)) as vec3;                     // P(1,1) - tvMN/3
+    
+    controlPoints[2][0] = p02;
+    controlPoints[2][1] = add(add(p02, scale(tu0N, 1/3)), scale(tuv0N, 1/9)) as vec3;
+    controlPoints[2][2] = add(subtract(p12, scale(tuMN, 1/3)), scale(tuvMN, 1/9)) as vec3;
+    controlPoints[2][3] = p12;
+    
+    // Row 3 (v=1): P(u,1)
+    controlPoints[3][0] = [...p0N] as vec3;                                    // P(0,1)
+    controlPoints[3][1] = add(p0N, scale(tu0N, 1/3)) as vec3;                 // P(0,1) + tu0N/3
+    controlPoints[3][2] = subtract(pMN, scale(tuMN, 1/3)) as vec3;            // P(1,1) - tuMN/3
+    controlPoints[3][3] = [...pMN] as vec3;                                    // P(1,1)
+    
+    // Calculate bounding box
+    let min: vec3 = [...controlPoints[0][0]] as vec3;
+    let max: vec3 = [...controlPoints[0][0]] as vec3;
+
+    for (let i = 0; i < 4; i++) {
+        for (let j = 0; j < 4; j++) {
+            const p = controlPoints[i][j];
+            min = [Math.min(min[0], p[0]), Math.min(min[1], p[1]), Math.min(min[2], p[2])];
+            max = [Math.max(max[0], p[0]), Math.max(max[1], p[1]), Math.max(max[2], p[2])];
+        }
+    }
+
+    return {
+        controlPoints,
+        boundingBox: { min, max },
+        color: hermite.color,
+        material: hermite.material
+    };
+};
+
+// Create a test Hermite Bézier patch with same shape as createTestBezierPatch
+export const createTestHermitePatch = (center: vec3, size: number): HermiteBezierPatch => {
+    const halfSize = size * 0.5;
+    
+    // Define 4 corner positions (same as in createTestBezierPatch corners)
+    const p00: vec3 = [center[0] - halfSize, center[1] + Math.sin(0) * Math.cos(0) * size * 0.3, center[2] - halfSize];
+    const pM0: vec3 = [center[0] + halfSize, center[1] + Math.sin(Math.PI) * Math.cos(0) * size * 0.3, center[2] - halfSize];
+    const p0N: vec3 = [center[0] - halfSize, center[1] + Math.sin(0) * Math.cos(Math.PI) * size * 0.3, center[2] + halfSize];
+    const pMN: vec3 = [center[0] + halfSize, center[1] + Math.sin(Math.PI) * Math.cos(Math.PI) * size * 0.3, center[2] + halfSize];
+    
+    // Calculate tangents that will produce the same saddle shape as createTestBezierPatch
+    // For the sine-cosine saddle: ∂P/∂u and ∂P/∂v
+    const curvature = size * 0.3;
+    
+    // u-direction tangents: ∂(sin(u*π)*cos(v*π))/∂u = π*cos(u*π)*cos(v*π)
+    const tu00: vec3 = [size, curvature * Math.PI * Math.cos(0) * Math.cos(0), 0];           // u=0, v=0
+    const tuM0: vec3 = [size, curvature * Math.PI * Math.cos(Math.PI) * Math.cos(0), 0];    // u=1, v=0
+    const tu0N: vec3 = [size, curvature * Math.PI * Math.cos(0) * Math.cos(Math.PI), 0];    // u=0, v=1
+    const tuMN: vec3 = [size, curvature * Math.PI * Math.cos(Math.PI) * Math.cos(Math.PI), 0]; // u=1, v=1
+    
+    // v-direction tangents: ∂(sin(u*π)*cos(v*π))/∂v = -π*sin(u*π)*sin(v*π)
+    const tv00: vec3 = [0, -curvature * Math.PI * Math.sin(0) * Math.sin(0), size];         // u=0, v=0
+    const tvM0: vec3 = [0, -curvature * Math.PI * Math.sin(Math.PI) * Math.sin(0), size];  // u=1, v=0
+    const tv0N: vec3 = [0, -curvature * Math.PI * Math.sin(0) * Math.sin(Math.PI), size];  // u=0, v=1
+    const tvMN: vec3 = [0, -curvature * Math.PI * Math.sin(Math.PI) * Math.sin(Math.PI), size]; // u=1, v=1
+    
+    // Mixed derivatives: ∂²(sin(u*π)*cos(v*π))/∂u∂v = -π²*cos(u*π)*sin(v*π)
+    const tuv00: vec3 = [0, -curvature * Math.PI * Math.PI * Math.cos(0) * Math.sin(0), 0];        // u=0, v=0
+    const tuvM0: vec3 = [0, -curvature * Math.PI * Math.PI * Math.cos(Math.PI) * Math.sin(0), 0];  // u=1, v=0
+    const tuv0N: vec3 = [0, -curvature * Math.PI * Math.PI * Math.cos(0) * Math.sin(Math.PI), 0];  // u=0, v=1
+    const tuvMN: vec3 = [0, -curvature * Math.PI * Math.PI * Math.cos(Math.PI) * Math.sin(Math.PI), 0]; // u=1, v=1
+    
+    return {
+        corners: {
+            p00: { u: 0, v: 0 },
+            pM0: { u: 1, v: 0 },
+            p0N: { u: 0, v: 1 },
+            pMN: { u: 1, v: 1 }
+        },
+        positions: { p00, pM0, p0N, pMN },
+        uTangents: { tu00, tuM0, tu0N, tuMN },
+        vTangents: { tv00, tvM0, tv0N, tvMN },
+        mixedDerivatives: { tuv00, tuvM0, tuv0N, tuvMN },
+        color: [0.2, 0.8, 0.2], // 초록색으로 구분
+        material: MaterialTemplates.MATTE
+    };
+};
+
+// Create Hermite Bézier patch from advanced parameters (like your reference code)
+export const createHermitePatchFromAdvancedParams = (
+    // Corner parameter values (u,v)
+    cornerParams: {
+        p00: { u: number; v: number; };
+        pM0: { u: number; v: number; };
+        p0N: { u: number; v: number; };
+        pMN: { u: number; v: number; };
+    },
+    // Corner positions (XYZ ×4)
+    positions: {
+        p00: vec3;
+        pM0: vec3;
+        p0N: vec3;
+        pMN: vec3;
+    },
+    // u-direction tangents (∂P/∂u) at corners (XYZ ×4)
+    uTangents: {
+        tu00: vec3;
+        tuM0: vec3;
+        tu0N: vec3;
+        tuMN: vec3;
+    },
+    // v-direction tangents (∂P/∂v) at corners (XYZ ×4)
+    vTangents: {
+        tv00: vec3;
+        tvM0: vec3;
+        tv0N: vec3;
+        tvMN: vec3;
+    },
+    // Mixed derivatives (∂²P/∂u∂v) at corners (XYZ ×4)
+    mixedDerivatives: {
+        tuv00: vec3;
+        tuvM0: vec3;
+        tuv0N: vec3;
+        tuvMN: vec3;
+    },
+    // Appearance
+    color: vec3,
+    material: Material
+): HermiteBezierPatch => {
+    return {
+        corners: cornerParams,
+        positions,
+        uTangents,
+        vTangents,
+        mixedDerivatives,
+        color,
+        material
     };
 };

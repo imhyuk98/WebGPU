@@ -1,6 +1,6 @@
-import { Scene, Sphere, Cylinder, Box, Plane, Circle, Ellipse, Line, ConeGeometry, Torus, TorusInput, BezierPatch } from "./renderer";
+import { Scene, Sphere, Cylinder, Box, Plane, Circle, Ellipse, Line, ConeGeometry, Torus, TorusInput, BezierPatch, HermiteBezierPatch } from "./renderer";
 import { Material, MaterialType, MaterialTemplates } from "./material";
-import { vec3, normalize, toRadians, createTestBezierPatch } from "./utils";
+import { vec3, normalize, toRadians, createTestBezierPatch, createTestHermitePatch, hermiteToBezierPatch, createHermitePatchFromAdvancedParams } from "./utils";
 
 // --- Helper Functions ---
 function random_double(min: number, max: number): number {
@@ -95,15 +95,26 @@ export function createBasicScene(): Scene {
         material: MaterialTemplates.MATTE
     } as ConeGeometry);
 
-    // 테스트용 Bézier patch 추가 - 정면에 크게 배치
-    const testPatch = createTestBezierPatch([0, 0, -2], 4.0); // 카메라 바로 앞, 더 큰 크기
+    // 테스트용 Bézier patch 추가 - Cone 오른쪽에 배치
+    const testPatch = createTestBezierPatch([5, 1, 0], 2.0); // Cone 오른쪽, 적당한 크기
     scene.bezierPatches.push(testPatch);
 
-    // 디버깅용: 같은 위치에 노란색 구체 추가
+    // 추가 도형들을 나열하여 배치
+    // 구체 - 가장 왼쪽
     scene.spheres.push({
-        center: [0, 0, -2],
+        center: [-2, 1, 0],
+        radius: 0.8,
+        color: [0.8, 0.2, 0.8], // 보라색
+        material: MaterialTemplates.MATTE
+    });
+
+    // 실린더 - 구체와 Cone 사이
+    scene.cylinders.push({
+        center: [0, 1.5, 0],
+        axis: [0, 1, 0],
+        height: 2.5,
         radius: 0.5,
-        color: [1.0, 1.0, 0.0], // 같은 노란색
+        color: [0.2, 0.8, 0.8], // 청록색
         material: MaterialTemplates.MATTE
     });
 
@@ -407,9 +418,53 @@ export function createShowcaseScene(): Scene {
         material: MaterialTemplates.MATTE
     });
 
-    // 🔶 Bézier Patch - 더 가까운 위치에 배치
-    const testPatch = createTestBezierPatch([10, 0, -6], 2.0); // 더 가까이, 더 크게
+    // 🔶 Bézier Patch - Cone 오른쪽에 배치하여 도형들을 나열
+    const testPatch = createTestBezierPatch([38, 0, -8], 2.0); // Cone 오른쪽, 같은 Z 라인
     scene.bezierPatches.push(testPatch);
+
+    // 🔷 Hermite Bézier Patch - 빨간색 패치와 비슷한 안장 모양으로 조정
+    const advancedHermitePatch = createHermitePatchFromAdvancedParams(
+        // 1) 네 꼭짓점의 파라미터 (u,v) 값 - 제시하신 코드와 동일한 방식
+        {
+            p00: { u: 0.0, v: 0.0 },  // P00: (u0, v0)
+            pM0: { u: 1.0, v: 0.0 },  // P_M0: (uM, v0)
+            p0N: { u: 0.0, v: 1.0 },  // P_0N: (u0, vN)
+            pMN: { u: 1.0, v: 1.0 }   // P_MN: (uM, vN)
+        },
+        // 2) 네 꼭짓점의 위치(Points) - 빨간색 패치와 같은 안장 모양 구조
+        {
+            p00: [41.0, -0.2, -9.0],  // 왼쪽 아래 (안장의 낮은 부분)
+            pM0: [43.0, -0.2, -9.0],  // 오른쪽 아래 (안장의 낮은 부분)
+            p0N: [41.0, -0.2, -7.0],  // 왼쪽 위 (안장의 낮은 부분)
+            pMN: [43.0, -0.2, -7.0]   // 오른쪽 위 (안장의 낮은 부분)
+        },
+        // 3) 네 꼭짓점의 u-접선(∂P/∂u) - 안장 모양을 위한 접선
+        {
+            tu00: [2.0,  0.6,  0.0],  // 왼쪽 아래에서 u 방향 접선 (위로 올라가는 곡률)
+            tuM0: [2.0, -0.6,  0.0],  // 오른쪽 아래에서 u 방향 접선 (아래로 내려가는 곡률)
+            tu0N: [2.0, -0.6,  0.0],  // 왼쪽 위에서 u 방향 접선 (아래로 내려가는 곡률)
+            tuMN: [2.0,  0.6,  0.0]   // 오른쪽 위에서 u 방향 접선 (위로 올라가는 곡률)
+        },
+        // 4) 네 꼭짓점의 v-접선(∂P/∂v) - 안장 모양을 위한 접선
+        {
+            tv00: [0.0,  0.6,  2.0],  // 왼쪽 아래에서 v 방향 접선 (위로 올라가는 곡률)
+            tvM0: [0.0,  0.6,  2.0],  // 오른쪽 아래에서 v 방향 접선 (위로 올라가는 곡률)
+            tv0N: [0.0, -0.6,  2.0],  // 왼쪽 위에서 v 방향 접선 (아래로 내려가는 곡률)
+            tvMN: [0.0, -0.6,  2.0]   // 오른쪽 위에서 v 방향 접선 (아래로 내려가는 곡률)
+        },
+        // 5) 네 꼭짓점의 혼합 도함수(∂²P/∂u∂v) - 안장 모양의 비틀림
+        {
+            tuv00: [0.0,  0.0,  0.0], // 왼쪽 아래에서 혼합 도함수 (작은 비틀림)
+            tuvM0: [0.0,  0.0,  0.0], // 오른쪽 아래에서 혼합 도함수 (작은 비틀림)
+            tuv0N: [0.0,  0.0,  0.0], // 왼쪽 위에서 혼합 도함수 (작은 비틀림)
+            tuvMN: [0.0,  0.0,  0.0]  // 오른쪽 위에서 혼합 도함수 (작은 비틀림)
+        },
+        // 6) 색상과 재질
+        [0.8, 0.2, 0.8], // 보라색으로 구분
+        MaterialTemplates.MATTE
+    );
+    const convertedAdvancedPatch = hermiteToBezierPatch(advancedHermitePatch);
+    scene.bezierPatches.push(convertedAdvancedPatch);
 
     return scene;
 }

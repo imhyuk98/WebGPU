@@ -1,7 +1,7 @@
 import structs_shader from "./shaders/structs.wgsl"
+import utils_shader from "./shaders/utils.wgsl"
 import scene_shader_code from "./shaders/scene.wgsl"
 import intersections_shader from "./shaders/intersections.wgsl"
-import bezier_patch_shader from "./shaders/bezier_patch.wgsl"
 import raytracer_kernel from "./shaders/raytracer_kernel.wgsl"
 import screen_shader from "./shaders/screen_shader.wgsl"
 import { Material, MaterialType, MaterialTemplates } from "./material";
@@ -541,9 +541,9 @@ export class Renderer {
         // WGSL 셰이더 코드를 하나로 합친 문자열
         const full_raytracer_code = `
             ${structs_shader}
+            ${utils_shader}
             ${scene_shader_code}
             ${intersections_shader}
-            ${bezier_patch_shader}
             ${raytracer_kernel}
         `;
 

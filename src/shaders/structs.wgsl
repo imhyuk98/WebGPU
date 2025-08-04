@@ -150,3 +150,50 @@ struct BVHPrimitiveInfo {
     padding1: u32,
     padding2: u32,
 };
+
+// Bézier Patch related structures
+struct Float3 {
+    x: f32,
+    y: f32,
+    z: f32,
+};
+
+struct BezierPatchData {
+    // 4×4 control points in row‑major order
+    P: array<Float3, 16>,
+    b_min: Float3,
+    b_max: Float3,
+};
+
+struct RayData {
+    ori : Float3,
+    dir : Float3,
+    t_min : f32,
+    t_max : f32,
+};
+
+struct BezierHit {
+    t : f32,
+    u : f32,
+    v : f32,
+    n : Float3,
+};
+
+struct BezierEvalResult {
+    P: Float3,
+    dPu: Float3,
+    dPv: Float3,
+};
+
+struct AABBResult {
+    hit: bool,
+    t_enter: f32,
+    t_exit: f32,
+};
+
+struct NewtonResult {
+    converged: bool,
+    u: f32,
+    v: f32,
+    t: f32,
+};

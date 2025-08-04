@@ -300,7 +300,7 @@ export function createShowcaseScene(): Scene {
     scene.planes.push({
         center: [0, 10, -8],
         normal: [0, 0, 1],
-        size: [80, 40], // 40x20 → 80x40 (훨씬 크게)
+        size: [120, 60], // 80x40 → 120x60 (더욱 넓게)
         rotation: [Math.PI/2, 0, 0],
         color: [0.6, 0.4, 0.8], // 연한 보라색 (사용되지 않은 색상)
         material: MaterialTemplates.MATTE

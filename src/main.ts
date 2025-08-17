@@ -4,6 +4,8 @@ import { Camera } from "./camera";
 import { Controls } from "./control";
 import { FPSCounter } from "./fps";
 import { Material, MaterialType, MaterialTemplates } from "./material";
+import { WorldPrimitives, attachDTDSWorldLogger } from "./importer";
+
 
 class App {
     canvas: HTMLCanvasElement;
@@ -11,6 +13,7 @@ class App {
     camera: Camera;
     controls: Controls;
     fpsCounter: FPSCounter;
+    loadedWorld: WorldPrimitives | null = null;
 
     lastTime: number = 0;
     isRunning: boolean = false;
@@ -30,6 +33,9 @@ class App {
         
         // 키보드 이벤트 리스너 추가
         this.setupKeyboardControls();
+
+        // 파일 로더 설정
+        this.setupFileLoader();
     }
 
     async initialize() {
@@ -39,8 +45,21 @@ class App {
         
         // 애니메이션 루프 시작
         this.isRunning = true;
-        this.lastTime = performance.now();
+        this.lastTime = performance.now(); // 라우저 API. 현재 시간을 밀리초로 반환
         this.gameLoop();
+    }
+
+    // 파일 로더 설정
+    setupFileLoader() {
+        const picker = document.getElementById("dtdsPicker") as HTMLInputElement | null;
+        if (picker) {
+            // attachDTDSWorldLogger는 파일 <input> 요소를 받아
+            // 파일 로딩, 파싱, 결과 로깅까지 모두 처리합니다.
+            // 별도의 옵션 없이 호출하면 기본적으로 로그가 출력됩니다.
+            attachDTDSWorldLogger(picker);
+        } else {
+            console.warn("File picker #dtdsPicker not found.");
+        }
     }
 
     // 키보드 컨트롤 설정
@@ -54,12 +73,6 @@ class App {
                     this.switchScene(SceneType.TORUS_FIELD);
                     break;
                 case '3':
-                    this.switchScene(SceneType.BASIC);
-                    break;
-                case '4':
-                    this.switchScene(SceneType.MIXED);
-                    break;
-                case '5':
                     this.switchScene(SceneType.METAL_TEST);
                     break;
                 case 'f':
@@ -85,9 +98,6 @@ class App {
 
     // Scene 전환
     async switchScene(newSceneType: SceneType) {
-        if (newSceneType === this.currentSceneType) {
-            return; // 같은 씬이면 무시
-        }
         this.currentSceneType = newSceneType;
         
         // 렌더링 일시정지

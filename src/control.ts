@@ -84,7 +84,7 @@ export class Controls {
         const yawRad = this.yaw * Math.PI / 180;
         const pitchRad = this.pitch * Math.PI / 180;
 
-        // 카메라가 바라보는 방향 계산
+        // 카메라가 바라보는 방향 계산, 구면 좌표계 -> 직교 좌표계 변환
         const lookDirection = [
             Math.cos(pitchRad) * Math.cos(yawRad),
             Math.sin(pitchRad),

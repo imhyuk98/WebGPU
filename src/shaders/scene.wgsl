@@ -12,31 +12,31 @@ fn get_num_boxes() -> u32 {
 }
 
 fn get_num_planes() -> u32 {
-    return u32(scene_buffer[3]);  // ?�더??4번째 ?�소
+    return u32(scene_buffer[3]); 
 }
 
 fn get_num_circles() -> u32 {
-    return u32(scene_buffer[4]);  // ?�더??5번째 ?�소
+    return u32(scene_buffer[4]);
 }
 
 fn get_num_ellipses() -> u32 {
-    return u32(scene_buffer[5]);  // ?�더??6번째 ?�소
+    return u32(scene_buffer[5]);
 }
 
 fn get_num_lines() -> u32 {
-    return u32(scene_buffer[6]);  // ?�더??7번째 ?�소
+    return u32(scene_buffer[6]);
 }
 
 fn get_num_cones() -> u32 {
-    return u32(scene_buffer[7]);  // ?�더??8번째 ?�소
+    return u32(scene_buffer[7]);
 }
 
 fn get_num_toruses() -> u32 {
-    return u32(scene_buffer[8]);  // ?�더??9번째 ?�소
+    return u32(scene_buffer[8]);  
 }
 
 fn get_num_bezier_patches() -> u32 {
-    return u32(scene_buffer[9]);  // ?�더??10번째 ?�소
+    return u32(scene_buffer[9]);
 }
 
 fn get_sphere(index: u32) -> Sphere {

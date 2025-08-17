@@ -1,6 +1,7 @@
 import { Scene, Sphere, Cylinder, Box, Plane, Circle, Ellipse, Line, ConeGeometry, Torus, TorusInput, BezierPatch, HermiteBezierPatch } from "./renderer";
 import { Material, MaterialType, MaterialTemplates } from "./material";
 import { vec3, normalize, toRadians, createTestBezierPatch, createTestHermitePatch, hermiteToBezierPatch, createHermitePatchFromAdvancedParams } from "./utils";
+import { WorldPrimitives } from "./importer";
 
 // --- Helper Functions ---
 function random_double(min: number, max: number): number {
@@ -403,5 +404,105 @@ function createTorusFieldScene(): Scene {
         toruses: toruses.map(convertTorusInput),
         bezierPatches: []
     } as Scene;
+}
+
+/**
+ * 파싱된 WorldPrimitives 데이터로부터 렌더링 가능한 Scene 객체를 생성합니다.
+ * @param world - extractWorldPrimitives 함수로부터 반환된 데이터
+ * @returns 렌더러가 사용할 수 있는 Scene 객체
+ */
+export function createSceneFromWorld(world: WorldPrimitives): Scene {
+    const scene: Scene = {
+        spheres: [],
+        cylinders: [],
+        boxes: [],
+        planes: [],
+        circles: [],
+        ellipses: [],
+        lines: [],
+        cones: [],
+        toruses: [],
+        bezierPatches: []
+    };
+
+    const defaultMaterial = MaterialTemplates.MATTE;
+    const defaultColor: vec3 = [0.8, 0.8, 0.8]; // 밝은 회색
+
+    // WorldPrimitives의 각 도형 배열을 Scene의 형식에 맞게 변환합니다.
+    world.spheres.forEach(s => scene.spheres.push({
+        center: s.center,
+        radius: s.radius,
+        color: defaultColor,
+        material: defaultMaterial
+    }));
+
+    world.cylinders.forEach(c => scene.cylinders.push({
+        center: c.center,
+        axis: c.axis,
+        height: c.height,
+        radius: c.radius,
+        color: defaultColor,
+        material: defaultMaterial
+    }));
+
+    world.planes.forEach(p => scene.planes.push({
+        center: p.center,
+        normal: p.normal,
+        size: p.size ?? [10, 10], // 기본 크기
+        rotation: [0, 0, 0], // 기본 회전
+        color: defaultColor,
+        material: defaultMaterial
+    }));
+
+    world.circles.forEach(c => scene.circles.push({
+        center: c.center,
+        normal: c.normal,
+        radius: c.radius,
+        color: defaultColor,
+        material: defaultMaterial
+    }));
+
+    world.ellipses.forEach(e => scene.ellipses.push({
+        center: e.center,
+        normal: e.normal,
+        radiusA: e.radiusA,
+        radiusB: e.radiusB,
+        rotation: e.xdir ? [0,0,0] : [0,0,0], // TODO: xdir로부터 회전 계산
+        color: defaultColor,
+        material: defaultMaterial
+    }));
+
+    world.lines.forEach(l => scene.lines.push({
+        start: l.start,
+        end: l.end,
+        thickness: l.thickness ?? 0.02, // 기본 두께
+        color: defaultColor,
+        material: defaultMaterial
+    }));
+
+    world.cones.forEach(c => scene.cones.push({
+        center: c.center,
+        axis: c.axis,
+        height: c.height,
+        radius: c.radius,
+        color: defaultColor,
+        material: defaultMaterial
+    }));
+
+    if (world.toruses) {
+        world.toruses.forEach(t => scene.toruses.push({
+            center: t.center,
+            rotation: t.rotation,
+            majorRadius: t.majorRadius,
+            minorRadius: t.minorRadius,
+            angle: toRadians(t.angleDeg),
+            color: defaultColor,
+            material: defaultMaterial
+        }));
+    }
+
+    // TODO: 다른 프리미티브 타입(예: Bezier)에 대한 변환 추가
+
+    return scene;
 }
 

@@ -58,7 +58,7 @@ const DEG = (rad: number) => (rad * 180) / Math.PI;
 
 const HEXDUMP_MAX = 64;
 const MAX_REC_LEN = 128 * 1024 * 1024;
-const APPLY_ZUP_TO_YUP = false; // 필요 시 true
+const APPLY_ZUP_TO_YUP = true; // 필요 시 true
 
 // 로그 보정(유효치가 없을 때 기본값으로 채워 배열에라도 담기)
 const RELAX_FOR_LOG = true;
@@ -153,7 +153,7 @@ function applyRotation(dir: Vec3, tr: TransformRecord): Vec3 {
   ];
 }
 // Z-up -> Y-up: (x, y, z) -> (x, z, -y)
-function fixCoordSystem(p: Vec3): Vec3 { const [ox, oy, oz] = p; return [ox, oz, -oy]; }
+function fixCoordSystem(p: Vec3): Vec3 { const [ox, oy, oz] = p; return [ox, -oz, oy]; }
 function maybeFix(p: Vec3): Vec3 { return APPLY_ZUP_TO_YUP ? fixCoordSystem(p) : p; }
 
 function isValidBasis(bx: Vec3, by: Vec3, bz: Vec3): boolean {
@@ -1270,16 +1270,16 @@ function logWorldArrays(world: WorldPrimitives, samplePerKind = 5, collapsed = f
   console.table([ summarizeKind(world) ]);
 
   const subGroup = collapsed ? console.groupCollapsed : console.group;
-  const print = <T>(title: string, arr: T[], fmt: (x: T, i: number) => string) => {
-    subGroup(`${title} (count=${arr.length})`);
-    const n = Math.min(arr.length, samplePerKind);
-    for (let i = 0; i < n; i++) {
-      console.log(`#${i+1}/${arr.length}  ${fmt(arr[i], i)}`);
-      console.log("  ↳ raw:", arr[i]);
-    }
-    if (arr.length > n) console.log(`... and ${arr.length - n} more`);
-    console.groupEnd();
-  };
+  const print = <T>(title: string, arr: T[], fmt: (x: T, i: number) => string) => {
+    subGroup(`${title} (count=${arr.length})`);
+    const n = arr.length; // <--- 이렇게 수정하세요.
+    for (let i = 0; i < n; i++) {
+      console.log(`#${i+1}/${arr.length}  ${fmt(arr[i], i)}`);
+      console.log("  ↳ raw:", arr[i]);
+    }
+    if (arr.length > n) console.log(`... and ${arr.length - n} more`);
+    console.groupEnd();
+  };
 
   print("Plane", world.planes, (p) => `center=${fmt3(p.center)} n=${fmt3(p.normal)} size=${p.size ? `[${p.size[0]}, ${p.size[1]}]` : "-"}`);
   print("Sphere", world.spheres, (p) => `center=${fmt3(p.center)} r=${p.radius}`);
@@ -1315,38 +1315,90 @@ function logWorldArrays(world: WorldPrimitives, samplePerKind = 5, collapsed = f
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 9) attach: 파일 → WorldPrimitives → 로그
+// 9) attach: 파일 → WorldPrimitives → 콜백 또는 로그
 // ──────────────────────────────────────────────────────────────────────────────
-export function attachDTDSWorldLogger(
-  input: string | HTMLInputElement = "dtdsPicker",
-  opts?: { samplePerKind?: number; collapsed?: boolean }
+
+/**
+ * .bin 파일이 로드되었을 때 호출될 콜백 함수 타입
+ * @param world - 파싱된 월드 프리미티브 데이터
+ * @param file - 로드된 파일 객체
+ */
+export type DTDSLoadCallback = (world: WorldPrimitives, file: File) => void;
+
+/**
+ * 파일 <input> 요소에 이벤트 리스너를 연결하여, .bin 파일 로드 시
+ * 파싱하고 결과를 콜백으로 전달하는 범용 로더.
+ *
+ * @param input - 파일 <input> 요소의 ID 또는 요소 자체
+ * @param onLoad - 파일 로드 및 파싱 성공 시 호출될 콜백 함수
+ * @param opts - 로깅 관련 옵션 (콜백과 별개로 로그 출력 여부 제어)
+ */
+export function attachDTDSLoader(
+    input: string | HTMLInputElement,
+    onLoad: DTDSLoadCallback,
+    opts?: { log?: boolean; samplePerKind?: number; collapsed?: boolean }
 ) {
-  const el = typeof input === "string"
-    ? (document.getElementById(input) as HTMLInputElement | null)
-    : input;
+    const el = typeof input === "string"
+        ? (document.getElementById(input) as HTMLInputElement | null)
+        : input;
 
-  if (!el) {
-    console.warn("[DTDS] world logger: file input not found:", input);
-    return;
-  }
+    if (!el) {
+        console.warn("[DTDS] loader: file input not found:", input);
+        return;
+    }
 
-  el.addEventListener("change", async () => {
-    const files = Array.from(el.files ?? []);
-    if (!files.length) return;
+    el.addEventListener("change", async () => {
+        const files = Array.from(el.files ?? []);
+        if (!files.length) return;
 
-    for (const f of files) {
-      (opts?.collapsed ? console.groupCollapsed : console.group)(`DTDS :: ${f.name}`);
-      try {
-        const world = await extractWorldPrimitives(f);
-        logWorldArrays(world, opts?.samplePerKind ?? 5, opts?.collapsed ?? false);
-      } catch (e) {
-        console.error("[DTDS] import failed:", e);
-      }
-      console.groupEnd();
-    }
+        for (const f of files) {
+            if (opts?.log) {
+                (opts?.collapsed ? console.groupCollapsed : console.group)(`DTDS :: ${f.name}`);
+            }
+            try {
+                const world = await extractWorldPrimitives(f);
 
-    el.value = ""; // 같은 파일 다시 선택 가능하게
-  });
+                // 콜백 함수 호출
+                onLoad(world, f);
+
+                // 옵션에 따라 로그 출력
+                if (opts?.log) {
+                    logWorldArrays(world, opts?.samplePerKind ?? 5, opts?.collapsed ?? false);
+                }
+            } catch (e) {
+                console.error("[DTDS] import failed:", e);
+            } finally {
+                if (opts?.log) {
+                    console.groupEnd();
+                }
+            }
+        }
+
+        el.value = ""; // 같은 파일 다시 선택 가능하게
+    });
+}
+
+
+/**
+ * 파일 <input> 요소에 이벤트 리스너를 연결하여, .bin 파일 로드 시
+ * 파싱하고 결과를 콘솔에 로깅하는 간편 함수. (기존 호환성 유지)
+ *
+ * @param input - 파일 <input> 요소의 ID 또는 요소 자체
+ * @param opts - 로깅 관련 옵션
+ */
+export function attachDTDSWorldLogger(
+    input: string | HTMLInputElement = "dtdsPicker",
+    opts?: { samplePerKind?: number; collapsed?: boolean }
+) {
+    // 새로운 로더를 사용하되, 콜백에서는 아무것도 하지 않고 로그만 출력하도록 설정
+    attachDTDSLoader(input, (world, file) => {
+        // 이 콜백은 로깅 전용이므로 비워둡니다.
+        // 실제 로깅은 attachDTDSLoader의 log 옵션으로 처리됩니다.
+    }, {
+        log: true, // 항상 로그를 출력하도록 설정
+        samplePerKind: opts?.samplePerKind,
+        collapsed: opts?.collapsed
+    });
 }
 
 // 기존 진입점 이름 호환 (main.ts에서 attachDTDSConsoleLogger 사용 중)

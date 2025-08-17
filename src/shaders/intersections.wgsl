@@ -213,46 +213,35 @@ fn calculate_box_normal(box: Box, hit_point: vec3<f32>) -> vec3<f32> {
 
 // Plane-Ray 교차 검사
 fn ray_plane_intersect(ray: Ray, plane: Plane) -> f32 {
-    // 회전 행렬 계산
-    let rotation_x = rotation_matrix_x(plane.rotation.x);
-    let rotation_y = rotation_matrix_y(plane.rotation.y);
-    let rotation_z = rotation_matrix_z(plane.rotation.z);
-    let rotation_matrix = rotation_z * rotation_y * rotation_x;
-    
-    // 회전된 법선 벡터
-    let world_normal = normalize(rotation_matrix * plane.normal);
-    
-    // 광선과 평면의 교차 계산
+    // xdir/ydir 기반 직교 기저 사용
+    var xdir_n = normalize(plane.xdir);
+    var ydir_n = normalize(plane.ydir);
+    // 직교 보정 (Gram-Schmidt)
+    ydir_n = normalize(ydir_n - xdir_n * dot(ydir_n, xdir_n));
+    // 법선
+    var world_normal = normalize(cross(xdir_n, ydir_n));
+    if (length(world_normal) < 1e-6) {
+        // fallback: plane.normal 사용
+        world_normal = normalize(plane.normal);
+        var helper = vec3<f32>(1.0,0.0,0.0);
+        if (abs(world_normal.x) > 0.9) { helper = vec3<f32>(0.0,1.0,0.0); }
+        xdir_n = normalize(cross(world_normal, helper));
+        ydir_n = normalize(cross(world_normal, xdir_n));
+    }
+
+    // 교차
     let denom = dot(world_normal, ray.direction);
-    
-    // 광선이 평면과 평행한 경우
-    if (abs(denom) < 0.0001) {
-        return -1.0;
-    }
-    
-    // 교차점까지의 거리 계산
+    if (abs(denom) < 1e-4) { return -1.0; }
     let t = dot(plane.center - ray.origin, world_normal) / denom;
-    
-    // t 범위 확인
-    if (t < ray.t_min || t > ray.t_max) {
-        return -1.0;
-    }
-    
-    // 교차점 계산
+    if (t < ray.t_min || t > ray.t_max) { return -1.0; }
+
     let hit_point = ray.origin + ray.direction * t;
-    
-    // 교차점이 직사각형 내부에 있는지 확인
-    let inverse_rotation = transpose(rotation_matrix);
-    let local_hit = inverse_rotation * (hit_point - plane.center);
-    
-    let half_width = plane.size.x * 0.5;
-    let half_height = plane.size.y * 0.5;
-    
-    // 직사각형 경계 확인 (XY 평면 기준)
-    if (abs(local_hit.x) <= half_width && abs(local_hit.y) <= half_height && abs(local_hit.z) < 0.001) {
-        return t;
-    }
-    
+    let offset = hit_point - plane.center;
+    let u = dot(offset, xdir_n);
+    let v = dot(offset, ydir_n);
+    let half_w = plane.size.x * 0.5;
+    let half_h = plane.size.y * 0.5;
+    if (abs(u) <= half_w && abs(v) <= half_h) { return t; }
     return -1.0;
 }
 

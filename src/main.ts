@@ -1,10 +1,10 @@
 import { Renderer } from "./renderer";
-import { createScene, SceneType } from "./Scene";
+import { createScene, SceneType, createSceneFromWorld } from "./Scene";
 import { Camera } from "./camera";
 import { Controls } from "./control";
 import { FPSCounter } from "./fps";
 import { Material, MaterialType, MaterialTemplates } from "./material";
-import { WorldPrimitives, attachDTDSWorldLogger } from "./importer";
+import { WorldPrimitives, attachDTDSLoader } from "./importer";
 
 
 class App {
@@ -53,10 +53,15 @@ class App {
     setupFileLoader() {
         const picker = document.getElementById("dtdsPicker") as HTMLInputElement | null;
         if (picker) {
-            // attachDTDSWorldLogger는 파일 <input> 요소를 받아
-            // 파일 로딩, 파싱, 결과 로깅까지 모두 처리합니다.
-            // 별도의 옵션 없이 호출하면 기본적으로 로그가 출력됩니다.
-            attachDTDSWorldLogger(picker);
+            // attachDTDSLoader를 사용하여 파일 로드 시 콜백 함수를 실행합니다.
+            attachDTDSLoader(picker, (world, file) => {
+                console.log(`[App] Loaded primitives from ${file.name}`);
+                this.loadedWorld = world;
+                this.loadPrimitivesAsScene(world);
+            }, { 
+                log: true, // 디버깅을 위해 콘솔에 로그를 계속 출력합니다.
+                collapsed: true 
+            });
         } else {
             console.warn("File picker #dtdsPicker not found.");
         }
@@ -113,7 +118,24 @@ class App {
         this.gameLoop();
     }
 
-    gameLoop() {
+	// 로드된 프리미티브로 새로운 Scene을 생성하고 렌더링합니다.
+	async loadPrimitivesAsScene(world: WorldPrimitives) {
+		console.log("[App] Creating a new scene from loaded primitives...");
+		
+		// 렌더링 루프를 일시 중지합니다.
+		this.isRunning = false;
+
+		// world 데이터를 기반으로 새로운 Scene 객체를 생성합니다.
+		const newScene = createSceneFromWorld(world);
+
+		// 새로운 씬으로 렌더러를 재초기화합니다.
+		await this.renderer.Initialize(newScene);
+		
+		// 렌더링을 다시 시작합니다.
+		this.isRunning = true;
+		this.lastTime = performance.now();
+		this.gameLoop();
+	}    gameLoop() {
         if (!this.isRunning) return;
 
         const currentTime = performance.now();

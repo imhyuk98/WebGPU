@@ -48,7 +48,9 @@ export interface Plane {
     center: vec3;
     normal: vec3;      // 평면의 법선 벡터
     size: [number, number];  // [width, height]
-    rotation: vec3;    // 평면 회전
+    xdir?: vec3;       // 선택적 X tangent 방향 (정규화)
+    ydir?: vec3;       // 선택적 Y tangent 방향 (정규화)
+    rotation: vec3;    // (deprecated) 회전 - basis 직접 전달 시 무시
     color: vec3;       // 색상
     material: Material;
 }
@@ -228,7 +230,7 @@ export class Renderer {
         const sphereStride = 8; // 8 floats per sphere (vec3, float, vec3, float) - already 4-byte aligned
         const cylinderStride = 12; // 12 floats per cylinder based on WGSL struct alignment - already 4-byte aligned
         const boxStride = 16; // 16 floats per box (vec3, vec3, vec3, vec3) - already 4-byte aligned
-        const planeStride = 20;  // 20 floats - already 4-byte aligned
+    const planeStride = 24;  // 24 floats (center(4)+normal(4)+xdir(4)+ydir(4)+size(4)+color(4))
         const circleStride = 12; // 12 floats - already 4-byte aligned
         const ellipseStride = 20; // 20 floats - already 4-byte aligned
         const lineStride = 16; // 16 floats - already 4-byte aligned
@@ -236,7 +238,7 @@ export class Renderer {
         const torusStride = 16; // 16 floats - already 4-byte aligned
         const bezierPatchStride = 60; // 16 control points (48 floats) + bounding box (8 floats) + color+material (4 floats)
 
-        const totalSizeInFloats = headerSize + 
+    const totalSizeInFloats = headerSize + 
                                   scene.spheres.length * sphereStride + 
                                   scene.cylinders.length * cylinderStride + 
                                   scene.boxes.length * boxStride + 
@@ -326,26 +328,79 @@ export class Renderer {
 
         // Plane 데이터 패킹
         for (const plane of scene.planes) {
+            const n = normalize(plane.normal);
+            let xdir = plane.xdir ? [...plane.xdir] as vec3 : undefined;
+            let ydir = plane.ydir ? [...plane.ydir] as vec3 : undefined;
+            const origX = xdir ? [...xdir] : undefined;
+            const origY = ydir ? [...ydir] : undefined;
+
+            // 1. Build / orthogonalize xdir
+            if (!xdir || Math.hypot(xdir[0],xdir[1],xdir[2]) < 1e-6) {
+                if (Math.abs(n[1]) > 0.9) {
+                    // Horizontal plane: lock x axis to world +X for stable rotation
+                    xdir = [1,0,0];
+                } else {
+                    // Pick axis least aligned with n
+                    const ref: vec3 = Math.abs(n[0]) < Math.abs(n[2]) ? [1,0,0] : [0,0,1];
+                    const dp = ref[0]*n[0]+ref[1]*n[1]+ref[2]*n[2];
+                    xdir = [ref[0]-n[0]*dp, ref[1]-n[1]*dp, ref[2]-n[2]*dp] as vec3;
+                }
+            }
+            // Make xdir orthogonal & normalize
+            let dpx = xdir[0]*n[0]+xdir[1]*n[1]+xdir[2]*n[2];
+            xdir = normalize([xdir[0]-n[0]*dpx, xdir[1]-n[1]*dpx, xdir[2]-n[2]*dpx] as vec3);
+
+            // 2. Build / orthogonalize ydir
+            if (!ydir || Math.hypot(ydir[0],ydir[1],ydir[2]) < 1e-6) {
+                // Right-handed: ydir = cross(n, xdir)
+                ydir = normalize([ n[1]*xdir[2]-n[2]*xdir[1], n[2]*xdir[0]-n[0]*xdir[2], n[0]*xdir[1]-n[1]*xdir[0] ] as vec3);
+            } else {
+                let dpn = ydir[0]*n[0]+ydir[1]*n[1]+ydir[2]*n[2];
+                let tmp: vec3 = [ydir[0]-n[0]*dpn, ydir[1]-n[1]*dpn, ydir[2]-n[2]*dpn];
+                let dpx2 = tmp[0]*xdir[0]+tmp[1]*xdir[1]+tmp[2]*xdir[2];
+                ydir = normalize([tmp[0]-xdir[0]*dpx2, tmp[1]-xdir[1]*dpx2, tmp[2]-xdir[2]*dpx2] as vec3);
+            }
+
+            // 3. Canonicalize orientation for horizontal planes: enforce +Z for ydir
+            if (Math.abs(n[1]) > 0.9 && ydir[2] < 0) {
+                xdir = [-xdir[0], -xdir[1], -xdir[2]] as vec3;
+                ydir = [-ydir[0], -ydir[1], -ydir[2]] as vec3; // keep right-handed
+            }
+
+            // 4. Ensure right-handedness (cross(xdir, ydir) ~ n)
+            const c = [ xdir[1]*ydir[2]-xdir[2]*ydir[1], xdir[2]*ydir[0]-xdir[0]*ydir[2], xdir[0]*ydir[1]-xdir[1]*ydir[0] ];
+            if ((c[0]*n[0]+c[1]*n[1]+c[2]*n[2]) < 0) {
+                ydir = [-ydir[0], -ydir[1], -ydir[2]] as vec3;
+            }
+
+            if (typeof (window as any) !== 'undefined' && (window as any).DEBUG_PLANE_BASIS) {
+                console.log(`[PlanePack:init] n=${n.map(v=>v.toFixed(3))} x0=${origX?origX.map(v=>v.toFixed(3)):'-'} y0=${origY?origY.map(v=>v.toFixed(3)):'-'} -> x=${xdir.map(v=>v.toFixed(3))} y=${ydir.map(v=>v.toFixed(3))}`);
+            }
+
             sceneData[offset + 0] = plane.center[0];
             sceneData[offset + 1] = plane.center[1];
             sceneData[offset + 2] = plane.center[2];
             sceneData[offset + 3] = 0; // padding
-            sceneData[offset + 4] = plane.normal[0];
-            sceneData[offset + 5] = plane.normal[1];
-            sceneData[offset + 6] = plane.normal[2];
+            sceneData[offset + 4] = n[0];
+            sceneData[offset + 5] = n[1];
+            sceneData[offset + 6] = n[2];
             sceneData[offset + 7] = 0; // padding
-            sceneData[offset + 8] = plane.size[0];
-            sceneData[offset + 9] = plane.size[1];
-            sceneData[offset + 10] = 0; // padding
+            sceneData[offset + 8] = xdir[0];
+            sceneData[offset + 9] = xdir[1];
+            sceneData[offset + 10] = xdir[2];
             sceneData[offset + 11] = 0; // padding
-            sceneData[offset + 12] = plane.rotation[0];
-            sceneData[offset + 13] = plane.rotation[1];
-            sceneData[offset + 14] = plane.rotation[2];
+            sceneData[offset + 12] = ydir[0];
+            sceneData[offset + 13] = ydir[1];
+            sceneData[offset + 14] = ydir[2];
             sceneData[offset + 15] = 0; // padding
-            sceneData[offset + 16] = plane.color[0];
-            sceneData[offset + 17] = plane.color[1];
-            sceneData[offset + 18] = plane.color[2];
-            sceneData[offset + 19] = plane.material.type;
+            sceneData[offset + 16] = plane.size[0];
+            sceneData[offset + 17] = plane.size[1];
+            sceneData[offset + 18] = 0; // padding
+            sceneData[offset + 19] = 0; // padding
+            sceneData[offset + 20] = plane.color[0];
+            sceneData[offset + 21] = plane.color[1];
+            sceneData[offset + 22] = plane.color[2];
+            sceneData[offset + 23] = plane.material.type;
             offset += planeStride;
         }
 
@@ -911,7 +966,7 @@ export class Renderer {
         const sphereStride = 8;
         const cylinderStride = 12;
         const boxStride = 16;
-        const planeStride = 20;
+    const planeStride = 24; // updated plane stride (center+normal+xdir+ydir+size+color)
         const circleStride = 12;
         const ellipseStride = 20;
         const lineStride = 16;
@@ -995,28 +1050,71 @@ export class Renderer {
             offset += boxStride;
         }
 
-        // Planes
+        // Planes (with xdir/ydir basis)
         for (const plane of scene.planes) {
+            const n = normalize(plane.normal);
+            let xdir = plane.xdir ? [...plane.xdir] as vec3 : undefined;
+            let ydir = plane.ydir ? [...plane.ydir] as vec3 : undefined;
+            const origX = xdir ? [...xdir] : undefined;
+            const origY = ydir ? [...ydir] : undefined;
+
+            if (!xdir || Math.hypot(xdir[0],xdir[1],xdir[2]) < 1e-6) {
+                if (Math.abs(n[1]) > 0.9) {
+                    xdir = [1,0,0];
+                } else {
+                    const ref: vec3 = Math.abs(n[0]) < Math.abs(n[2]) ? [1,0,0] : [0,0,1];
+                    const dp = ref[0]*n[0]+ref[1]*n[1]+ref[2]*n[2];
+                    xdir = [ref[0]-n[0]*dp, ref[1]-n[1]*dp, ref[2]-n[2]*dp] as vec3;
+                }
+            }
+            let dpx = xdir[0]*n[0]+xdir[1]*n[1]+xdir[2]*n[2];
+            xdir = normalize([xdir[0]-n[0]*dpx, xdir[1]-n[1]*dpx, xdir[2]-n[2]*dpx] as vec3);
+
+            if (!ydir || Math.hypot(ydir[0],ydir[1],ydir[2]) < 1e-6) {
+                ydir = normalize([ n[1]*xdir[2]-n[2]*xdir[1], n[2]*xdir[0]-n[0]*xdir[2], n[0]*xdir[1]-n[1]*xdir[0] ] as vec3);
+            } else {
+                let dpn = ydir[0]*n[0]+ydir[1]*n[1]+ydir[2]*n[2];
+                let tmp: vec3 = [ydir[0]-n[0]*dpn, ydir[1]-n[1]*dpn, ydir[2]-n[2]*dpn];
+                let dpx2 = tmp[0]*xdir[0]+tmp[1]*xdir[1]+tmp[2]*xdir[2];
+                ydir = normalize([tmp[0]-xdir[0]*dpx2, tmp[1]-xdir[1]*dpx2, tmp[2]-xdir[2]*dpx2] as vec3);
+            }
+
+            if (Math.abs(n[1]) > 0.9 && ydir[2] < 0) {
+                xdir = [-xdir[0], -xdir[1], -xdir[2]] as vec3;
+                ydir = [-ydir[0], -ydir[1], -ydir[2]] as vec3;
+            }
+
+            const c = [ xdir[1]*ydir[2]-xdir[2]*ydir[1], xdir[2]*ydir[0]-xdir[0]*ydir[2], xdir[0]*ydir[1]-xdir[1]*ydir[0] ];
+            if ((c[0]*n[0]+c[1]*n[1]+c[2]*n[2]) < 0) {
+                ydir = [-ydir[0], -ydir[1], -ydir[2]] as vec3;
+            }
+            if (typeof (window as any) !== 'undefined' && (window as any).DEBUG_PLANE_BASIS) {
+                console.log(`[PlanePack:update] n=${n.map(v=>v.toFixed(3))} x0=${origX?origX.map(v=>v.toFixed(3)):'-'} y0=${origY?origY.map(v=>v.toFixed(3)):'-'} -> x=${xdir.map(v=>v.toFixed(3))} y=${ydir.map(v=>v.toFixed(3))}`);
+            }
             sceneData[offset + 0] = plane.center[0];
             sceneData[offset + 1] = plane.center[1];
             sceneData[offset + 2] = plane.center[2];
             sceneData[offset + 3] = 0;
-            sceneData[offset + 4] = plane.normal[0];
-            sceneData[offset + 5] = plane.normal[1];
-            sceneData[offset + 6] = plane.normal[2];
+            sceneData[offset + 4] = n[0];
+            sceneData[offset + 5] = n[1];
+            sceneData[offset + 6] = n[2];
             sceneData[offset + 7] = 0;
-            sceneData[offset + 8] = plane.size[0];
-            sceneData[offset + 9] = plane.size[1];
-            sceneData[offset + 10] = 0;
+            sceneData[offset + 8] = xdir[0];
+            sceneData[offset + 9] = xdir[1];
+            sceneData[offset + 10] = xdir[2];
             sceneData[offset + 11] = 0;
-            sceneData[offset + 12] = plane.rotation[0];
-            sceneData[offset + 13] = plane.rotation[1];
-            sceneData[offset + 14] = plane.rotation[2];
+            sceneData[offset + 12] = ydir[0];
+            sceneData[offset + 13] = ydir[1];
+            sceneData[offset + 14] = ydir[2];
             sceneData[offset + 15] = 0;
-            sceneData[offset + 16] = plane.color[0];
-            sceneData[offset + 17] = plane.color[1];
-            sceneData[offset + 18] = plane.color[2];
-            sceneData[offset + 19] = plane.material.type;
+            sceneData[offset + 16] = plane.size[0];
+            sceneData[offset + 17] = plane.size[1];
+            sceneData[offset + 18] = 0;
+            sceneData[offset + 19] = 0;
+            sceneData[offset + 20] = plane.color[0];
+            sceneData[offset + 21] = plane.color[1];
+            sceneData[offset + 22] = plane.color[2];
+            sceneData[offset + 23] = plane.material.type;
             offset += planeStride;
         }
 

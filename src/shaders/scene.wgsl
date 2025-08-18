@@ -83,24 +83,20 @@ fn get_plane(index: u32) -> Plane {
     let num_cylinders = get_num_cylinders();
     let num_boxes = get_num_boxes();
     
+    // Updated plane stride = 24 (center(4)+normal(4)+xdir(4)+ydir(4)+size(4)+color(4))
     let offset = 13u + 
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
-                 index * 20u;  // planeStride = 20 (16바이트 정렬에 맞춤)
-    
+                 index * 24u;  
     var plane: Plane;
     plane.center = vec3<f32>(scene_buffer[offset + 0u], scene_buffer[offset + 1u], scene_buffer[offset + 2u]);
-    // offset + 3은 padding
     plane.normal = vec3<f32>(scene_buffer[offset + 4u], scene_buffer[offset + 5u], scene_buffer[offset + 6u]);
-    // offset + 7은 padding
-    plane.size = vec2<f32>(scene_buffer[offset + 8u], scene_buffer[offset + 9u]);
-    // offset + 10, 11은 padding
-    plane.rotation = vec3<f32>(scene_buffer[offset + 12u], scene_buffer[offset + 13u], scene_buffer[offset + 14u]);
-    // offset + 15는 padding
-    plane.color = vec3<f32>(scene_buffer[offset + 16u], scene_buffer[offset + 17u], scene_buffer[offset + 18u]);
-    plane.materialType = i32(scene_buffer[offset + 19u]);
-    // offset + 20?� padding
+    plane.xdir = vec3<f32>(scene_buffer[offset + 8u], scene_buffer[offset + 9u], scene_buffer[offset + 10u]);
+    plane.ydir = vec3<f32>(scene_buffer[offset + 12u], scene_buffer[offset + 13u], scene_buffer[offset + 14u]);
+    plane.size = vec2<f32>(scene_buffer[offset + 16u], scene_buffer[offset + 17u]);
+    plane.color = vec3<f32>(scene_buffer[offset + 20u], scene_buffer[offset + 21u], scene_buffer[offset + 22u]);
+    plane.materialType = i32(scene_buffer[offset + 23u]);
     return plane;
 }
 
@@ -114,7 +110,7 @@ fn get_circle(index: u32) -> Circle {
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
-                 num_planes * 20u +
+                 num_planes * 24u +
                  index * 12u;  // circleStride = 12
     
     var circle: Circle;
@@ -139,7 +135,7 @@ fn get_ellipse(index: u32) -> Ellipse {
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
-                 num_planes * 20u +
+                 num_planes * 24u +
                  num_circles * 12u +
                  index * 20u;  // ellipseStride = 20
     
@@ -171,7 +167,7 @@ fn get_line(index: u32) -> Line {
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
-                 num_planes * 20u +
+                 num_planes * 24u +
                  num_circles * 12u +
                  num_ellipses * 20u +
                  index * 16u;  // lineStride = 16
@@ -200,7 +196,7 @@ fn get_cone(index: u32) -> Cone {
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
-                 num_planes * 20u +
+                 num_planes * 24u +
                  num_circles * 12u +
                  num_ellipses * 20u +
                  num_lines * 16u +
@@ -232,7 +228,7 @@ fn get_torus(index: u32) -> Torus {
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
-                 num_planes * 20u +
+                 num_planes * 24u +
                  num_circles * 12u +
                  num_ellipses * 20u +
                  num_lines * 16u +
@@ -268,7 +264,8 @@ fn get_bezier_patch(index: u32) -> BezierPatch {
                  num_spheres * 8u + 
                  num_cylinders * 12u + 
                  num_boxes * 16u + 
-                 num_planes * 20u +
+                 // FIX: plane stride updated from 20u -> 24u (center+normal+xdir+ydir+size+color)
+                 num_planes * 24u +
                  num_circles * 12u +
                  num_ellipses * 20u +
                  num_lines * 16u +

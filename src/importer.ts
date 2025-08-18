@@ -843,7 +843,7 @@ function decodeInstanceFlex(r: BinReader, len: number, symbolCount: number): Ins
 // ──────────────────────────────────────────────────────────────────────────────
 // 6) 월드 프리미티브 타입(도형별 배열) + 푸시 함수
 // ──────────────────────────────────────────────────────────────────────────────
-export type WPPlane    = { center: Vec3; normal: Vec3; size?: [number, number] };
+export type WPPlane    = { center: Vec3; normal: Vec3; size?: [number, number]; xdir?: Vec3; ydir?: Vec3 };
 export type WPSphere   = { center: Vec3; radius: number };
 export type WPCylinder = { center: Vec3; axis: Vec3; radius: number; height: number };
 export type WPCircle   = { center: Vec3; normal: Vec3; radius: number };
@@ -923,14 +923,21 @@ function pushFromLocal(world: WorldPrimitives, name: string, info: any, tr: Tran
       if (finiteVec(c) && r > 0) world.spheres.push({ center: c, radius: r });
       break;
     }
-    case "Plane": {
-      const c = pos(info.center)!;
-      const n = rot(info.normal ?? (info.xdir && info.ydir ? cross(info.xdir, info.ydir) : undefined)) ?? [0,0,1];
-      const w = info.w, h = info.h;
-      const size = (finite(w) && finite(h) && w > 0 && h > 0) ? [w, h] as [number, number] : undefined;
-      if (finiteVec(c) && finiteVec(n)) world.planes.push({ center: c, normal: n, size });
-      break;
-    }
+        case "Plane": {
+            const c = pos(info.center)!;
+            // Transform supplied tangents if present
+            const xd = info.xdir ? rot(info.xdir) : undefined;
+            const yd = info.ydir ? rot(info.ydir) : undefined;
+            // Derive normal: prefer explicit normal, else cross(xdir, ydir)
+            const derivedNormal = info.normal ?? (info.xdir && info.ydir ? cross(info.xdir, info.ydir) : undefined);
+            const n = rot(derivedNormal) ?? [0,0,1];
+            const w = info.w, h = info.h;
+            const size = (finite(w) && finite(h) && w > 0 && h > 0) ? [w, h] as [number, number] : undefined;
+            if (finiteVec(c) && finiteVec(n)) {
+                world.planes.push({ center: c, normal: n, size, xdir: xd, ydir: yd });
+            }
+            break;
+        }
     case "Cylinder": {
       const c = pos(info.center)!;
       const axis = rot(info.normal ?? (info.xdir && info.ydir ? cross(info.xdir, info.ydir) : undefined)) ?? [0,1,0];

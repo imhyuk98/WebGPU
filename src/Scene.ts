@@ -55,13 +55,17 @@ export function createShowcaseScene(): Scene {
         bezierPatches: []
     } as Scene;
 
-    // 🏠 바닥 평면 (회색) - 카메라 앞쪽 아래에 배치
+    // 🏠 바닥 평면
+    // 기존: normal=(0,0,1) + rotation=(PI/2,0,0) 로 수평면 구현 → 이제 rotation 폐기, 직접 수평 normal 사용
+    // 월드 좌표: Y가 위, Z가 -앞 방향. 바닥은 Y= -2 아래쪽에 놓고 normal=(0,1,0)
     scene.planes.push({
-        center: [0, 10, -8],
-        normal: [0, 0, 1],
-        size: [120, 60], // 80x40 → 120x60 (더욱 넓게)
-        rotation: [Math.PI/2, 0, 0],
-        color: [0.6, 0.4, 0.8], // 연한 보라색 (사용되지 않은 색상)
+        center: [0, -2, -8],      // 객체들 기준 아래쪽으로 이동
+        normal: [0, 1, 0],        // 위로 향하는 법선
+        size: [120, 120],         // 넓은 바닥
+        xdir: [1, 0, 0],          // U 축 (가로)
+        ydir: [0, 0, -1],         // V 축 (카메라 쪽이 -Z 이므로 오른손계 유지 위해 -Z)
+        rotation: [0,0,0],        // legacy (무시)
+        color: [0.6, 0.4, 0.8],
         material: MaterialTemplates.MATTE
     });
 
@@ -92,13 +96,15 @@ export function createShowcaseScene(): Scene {
         material: MaterialTemplates.MATTE // ✅ ROUGH_METAL → MIRROR
     });
 
-    // 🟡 Plane (평면) - 오른쪽, 카메라를 향하도록
+    // 🟡 세로 Plane (우측 Billboard)
     scene.planes.push({
-        center: [4, 0, -8], // 5 → 4
+        center: [4, 0, -8],
         normal: [0, 0, 1],
         size: [2.5, 2.5],
+        xdir: [1,0,0],            // 오른쪽
+        ydir: [0,1,0],            // 위쪽
         rotation: [0, 0, 0],
-        color: [1.0, 1.0, 0.2], // ✅ color → color
+        color: [1.0, 1.0, 0.2],
         material: MaterialTemplates.MATTE
     });
 
@@ -448,11 +454,21 @@ export function createSceneFromWorld(world: WorldPrimitives): Scene {
     world.planes.forEach(p => scene.planes.push({
         center: p.center,
         normal: p.normal,
-        size: p.size ?? [10, 10], // 기본 크기
-        rotation: [0, 0, 0], // 기본 회전
+        size: p.size ?? [10, 10],
+        xdir: p.xdir,  // now imported
+        ydir: p.ydir,  // now imported
+        rotation: [0, 0, 0], // legacy
         color: defaultColor,
         material: defaultMaterial
     }));
+
+    if (world.planes.length) {
+        console.groupCollapsed(`[Scene] Imported ${world.planes.length} planes with tangents`);
+        world.planes.forEach((p,i)=>{
+            console.log(`Plane[${i}] center=${p.center.map(v=>v.toFixed(3))} n=${p.normal.map(v=>v.toFixed(3))} xdir=${p.xdir?p.xdir.map(v=>v.toFixed(3)):'-'} ydir=${p.ydir?p.ydir.map(v=>v.toFixed(3)):'-'} size=${p.size?p.size.join('x'):'-'} `);
+        });
+        console.groupEnd();
+    }
 
     world.circles.forEach(c => scene.circles.push({
         center: c.center,

@@ -213,32 +213,37 @@ fn calculate_box_normal(box: Box, hit_point: vec3<f32>) -> vec3<f32> {
 
 // Plane-Ray 교차 검사
 fn ray_plane_intersect(ray: Ray, plane: Plane) -> f32 {
-    // xdir/ydir 기반 직교 기저 사용
-    var xdir_n = normalize(plane.xdir);
-    var ydir_n = normalize(plane.ydir);
-    // 직교 보정 (Gram-Schmidt)
-    ydir_n = normalize(ydir_n - xdir_n * dot(ydir_n, xdir_n));
-    // 법선
-    var world_normal = normalize(cross(xdir_n, ydir_n));
-    if (length(world_normal) < 1e-6) {
-        // fallback: plane.normal 사용
-        world_normal = normalize(plane.normal);
-        var helper = vec3<f32>(1.0,0.0,0.0);
-        if (abs(world_normal.x) > 0.9) { helper = vec3<f32>(0.0,1.0,0.0); }
-        xdir_n = normalize(cross(world_normal, helper));
-        ydir_n = normalize(cross(world_normal, xdir_n));
-    }
-
-    // 교차
-    let denom = dot(world_normal, ray.direction);
+    // Normalized basis directly provided
+    let n = normalize(plane.normal);
+    let denom = dot(n, ray.direction);
     if (abs(denom) < 1e-4) { return -1.0; }
-    let t = dot(plane.center - ray.origin, world_normal) / denom;
+    let t = dot(plane.center - ray.origin, n) / denom;
     if (t < ray.t_min || t > ray.t_max) { return -1.0; }
 
     let hit_point = ray.origin + ray.direction * t;
+    let tangent1_raw = plane.xdir;
+    let tangent2_raw = plane.ydir;
+    // Orthonormalize defensively
+    var t1 = tangent1_raw;
+    if (length(t1) < 1e-6 || abs(dot(normalize(t1), n)) > 0.999) {
+        // Rebuild a tangent if invalid or parallel
+        let helper = select(vec3<f32>(0.0,1.0,0.0), vec3<f32>(1.0,0.0,0.0), abs(n.y) > 0.9);
+        t1 = normalize(cross(helper, n));
+    } else {
+        t1 = normalize(t1 - n * dot(t1, n));
+    }
+    var t2 = tangent2_raw;
+    if (length(t2) < 1e-6 || abs(dot(normalize(t2), n)) > 0.999) {
+        t2 = normalize(cross(n, t1));
+    } else {
+        t2 = normalize(t2 - n * dot(t2, n));
+    }
+    // Ensure right-handed
+    if (dot(cross(t1, t2), n) < 0.0) { t2 = -t2; }
+
     let offset = hit_point - plane.center;
-    let u = dot(offset, xdir_n);
-    let v = dot(offset, ydir_n);
+    let u = dot(offset, t1);
+    let v = dot(offset, t2);
     let half_w = plane.size.x * 0.5;
     let half_h = plane.size.y * 0.5;
     if (abs(u) <= half_w && abs(v) <= half_h) { return t; }
@@ -247,14 +252,7 @@ fn ray_plane_intersect(ray: Ray, plane: Plane) -> f32 {
 
 // Plane 법선 계산
 fn calculate_plane_normal(plane: Plane, hit_point: vec3<f32>) -> vec3<f32> {
-    // 회전 행렬 계산
-    let rotation_x = rotation_matrix_x(plane.rotation.x);
-    let rotation_y = rotation_matrix_y(plane.rotation.y);
-    let rotation_z = rotation_matrix_z(plane.rotation.z);
-    let rotation_matrix = rotation_z * rotation_y * rotation_x;
-    
-    // 회전된 법선 반환
-    return normalize(rotation_matrix * plane.normal);
+    return normalize(plane.normal);
 }
 
 // Utility function to create an interval

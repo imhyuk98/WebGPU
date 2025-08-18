@@ -30,17 +30,18 @@ struct Box {
 };
 
 struct Plane {
-    center: vec3<f32>,
-    padding1: f32,
-    normal: vec3<f32>,
-    padding2: f32,
-    size: vec2<f32>,      // width, height
-    padding3: vec2<f32>,  // vec2 뒤에는 vec2 패딩
-    rotation: vec3<f32>,
-    padding4: f32,
-    color: vec3<f32>,
-    materialType: i32,
-    padding5: f32,
+    center: vec3<f32>,    // 0-2
+    padding1: f32,        // 3
+    normal: vec3<f32>,    // 4-6
+    padding2: f32,        // 7
+    xdir: vec3<f32>,      // 8-10 (normalized tangent basis X)
+    padding3: f32,        // 11
+    ydir: vec3<f32>,      // 12-14 (normalized tangent basis Y)
+    padding4: f32,        // 15
+    size: vec2<f32>,      // 16-17 (width, height)
+    padding5: vec2<f32>,  // 18-19
+    color: vec3<f32>,     // 20-22
+    materialType: i32,    // 23
 }
 
 struct Circle {

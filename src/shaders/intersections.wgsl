@@ -467,44 +467,42 @@ fn calculate_line_normal(line: Line, hit_point: vec3<f32>) -> vec3<f32> {
 
 // Torus SDF (Signed Distance Function) - 뚜껑 없는 열린 도넛
 fn torus_sdf(p: vec3<f32>, torus: Torus) -> f32 {
-    // 토러스 중심으로 이동
-    var pos = p - torus.center;
-    
-    // 회전 적용 (역회전)
-    let rot_x = rotation_matrix_x(-torus.rotation.x);
-    let rot_y = rotation_matrix_y(-torus.rotation.y);
-    let rot_z = rotation_matrix_z(-torus.rotation.z);
-    let rotation_matrix = rot_z * rot_y * rot_x;
-    pos = rotation_matrix * pos;
-    
-    // 표준 토러스 SDF 계산 (뚜껑 없는 완전한 도넛 형태)
-    let q = vec2<f32>(length(vec2<f32>(pos.x, pos.z)) - torus.majorRadius, pos.y);
+    // Semantics: xdir = radial vector from center to start of main arc (R along 0deg)
+    //            ydir = tangent direction of main arc at start (positive sweep direction)
+    //            normal n = cross(xdir, ydir)
+    var xdir = normalize(torus.xdir);
+    var ydir = normalize(torus.ydir);
+    var n = cross(xdir, ydir);
+    let nLen = length(n);
+    if (nLen < 1e-6) {
+        // fallback orthogonalization if input degenerate
+        if (abs(xdir.y) < 0.9) { ydir = normalize(cross(vec3<f32>(0.0,1.0,0.0), xdir)); }
+        else { ydir = normalize(cross(vec3<f32>(0.0,0.0,1.0), xdir)); }
+        n = cross(xdir, ydir);
+    } else {
+        n = n / nLen;
+    }
+    // Project point
+    let rel = p - torus.center;
+    let lx = dot(rel, xdir);      // in-plane radial component (cos theta * R approx)
+    let ly = dot(rel, ydir);      // in-plane tangential component (sin theta * R approx)
+    let ln = dot(rel, n);         // out-of-plane (tube minor circle axis)
+    let radial = length(vec2<f32>(lx, ly));
+    let q = vec2<f32>(radial - torus.majorRadius, ln);
     return length(q) - torus.minorRadius;
 }
 
 // 토러스 각도 체크 함수
 fn is_point_in_torus_angle_range(point: vec3<f32>, torus: Torus) -> bool {
-    // 토러스 중심으로 이동
-    var pos = point - torus.center;
-    
-    // 회전 적용 (역회전)
-    let rot_x = rotation_matrix_x(-torus.rotation.x);
-    let rot_y = rotation_matrix_y(-torus.rotation.y);
-    let rot_z = rotation_matrix_z(-torus.rotation.z);
-    let rotation_matrix = rot_z * rot_y * rot_x;
-    pos = rotation_matrix * pos;
-    
-    // XZ 평면에서의 각도 계산
-    let angle = atan2(pos.z, pos.x);
-    
-    // 각도를 0~2π 범위로 정규화
-    var normalized_angle = angle;
-    if (normalized_angle < 0.0) {
-        normalized_angle = normalized_angle + 2.0 * 3.14159265359;
-    }
-    
-    // 단순화된 각도 범위 체크: 0부터 angle까지
-    return normalized_angle <= torus.angle;
+    // Angle measured in plane spanned by (xdir, ydir)
+    let xdir = normalize(torus.xdir);
+    let ydir = normalize(torus.ydir);
+    var rel = point - torus.center;
+    let lx = dot(rel, xdir);
+    let ly = dot(rel, ydir);
+    var ang = atan2(ly, lx); // 0 at +xdir, increases toward +ydir
+    if (ang < 0.0) { ang = ang + 2.0 * 3.14159265359; }
+    return ang <= torus.angle;
 }
 
 // Ray-Torus intersection using sphere tracing (SDF-based ray marching)
@@ -542,25 +540,23 @@ fn ray_torus_intersect(ray: Ray, torus: Torus) -> f32 {
 
 // Torus 법선 계산 (SDF gradient 이용)
 fn calculate_torus_normal(torus: Torus, hit_point: vec3<f32>) -> vec3<f32> {
-    let epsilon = 0.0001;  // 더 작은 epsilon으로 정확도 향상
-    
-    // 그라디언트 계산 (중앙 차분법)
-    let dx = torus_sdf(hit_point + vec3<f32>(epsilon, 0.0, 0.0), torus) - 
-             torus_sdf(hit_point - vec3<f32>(epsilon, 0.0, 0.0), torus);
-    let dy = torus_sdf(hit_point + vec3<f32>(0.0, epsilon, 0.0), torus) - 
-             torus_sdf(hit_point - vec3<f32>(0.0, epsilon, 0.0), torus);
-    let dz = torus_sdf(hit_point + vec3<f32>(0.0, 0.0, epsilon), torus) - 
-             torus_sdf(hit_point - vec3<f32>(0.0, 0.0, epsilon), torus);
-    
-    let gradient = vec3<f32>(dx, dy, dz) / (2.0 * epsilon);
-    let len = length(gradient);
-    
-    if (len > 0.0001) {
-        return gradient / len;
-    } else {
-        // 안전한 기본 법선 반환
-        return vec3<f32>(0.0, 1.0, 0.0);
-    }
+    let xdir = normalize(torus.xdir);
+    let ydir = normalize(torus.ydir);
+    var n = cross(xdir, ydir);
+    let nLen = length(n);
+    if (nLen < 1e-6) { n = vec3<f32>(0.0,1.0,0.0); } else { n = n / nLen; }
+    let rel = hit_point - torus.center;
+    let lx = dot(rel, xdir);
+    let ly = dot(rel, ydir);
+    let ln = dot(rel, n);
+    let radial = length(vec2<f32>(lx, ly));
+    let dr = radial - torus.majorRadius;
+    let denom = max(sqrt(dr*dr + ln*ln), 1e-6);
+    let d_radial = dr / denom;
+    let d_ln = ln / denom;
+    let radial_dir = (lx * xdir + ly * ydir) / max(radial, 1e-6);
+    let grad = d_radial * radial_dir + d_ln * n;
+    return normalize(grad);
 }
 
 // Cone SDF (Signed Distance Function)

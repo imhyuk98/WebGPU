@@ -80,16 +80,18 @@ struct Line {
 }
 
 struct Torus {
-    center: vec3<f32>,      // 토러스의 중심점
-    padding1: f32,
-    rotation: vec3<f32>,    // 회전 각도 (시작 방향 조정)
-    padding2: f32,
-    majorRadius: f32,       // 주반지름 (R)
-    minorRadius: f32,       // 부반지름 (r)
-    angle: f32,             // 그릴 각도 (라디안, 0부터 시작)
-    padding3: f32,          // padding (예전 endAngle 자리)
-    color: vec3<f32>,       // 색상
-    materialType: i32,      // 재질 타입
+    center: vec3<f32>,   // 0-2
+    pad0: f32,           // 3
+    xdir: vec3<f32>,     // 4-6 (major circle local X axis)
+    pad1: f32,           // 7
+    ydir: vec3<f32>,     // 8-10 (tube up axis)
+    pad2: f32,           // 11
+    majorRadius: f32,    // 12
+    minorRadius: f32,    // 13
+    angle: f32,          // 14 (sweep in radians)
+    pad3: f32,           // 15
+    color: vec3<f32>,    // 16-18
+    materialType: i32,   // 19
 }
 
 struct BezierPatch {

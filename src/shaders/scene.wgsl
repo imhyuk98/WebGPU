@@ -232,20 +232,22 @@ fn get_torus(index: u32) -> Torus {
                  num_circles * 12u +
                  num_ellipses * 20u +
                  num_lines * 16u +
-                 num_cones * 16u +  // Updated cone stride
-                 index * 16u;  // torusStride = 16
+                 num_cones * 16u +
+                 index * 20u;  // torusStride = 20 (center + xdir + ydir + radii/color)
     
     var torus: Torus;
     torus.center = vec3<f32>(scene_buffer[offset + 0u], scene_buffer[offset + 1u], scene_buffer[offset + 2u]);
-    // offset + 3?� padding
-    torus.rotation = vec3<f32>(scene_buffer[offset + 4u], scene_buffer[offset + 5u], scene_buffer[offset + 6u]);
-    // offset + 7?� padding
-    torus.majorRadius = scene_buffer[offset + 8u];
-    torus.minorRadius = scene_buffer[offset + 9u];
-    torus.angle = scene_buffer[offset + 10u];
-    // offset + 11?� padding (?�전 endAngle ?�리)
-    torus.color = vec3<f32>(scene_buffer[offset + 12u], scene_buffer[offset + 13u], scene_buffer[offset + 14u]);
-    torus.materialType = i32(scene_buffer[offset + 15u]);
+    // 3 padding
+    torus.xdir = vec3<f32>(scene_buffer[offset + 4u], scene_buffer[offset + 5u], scene_buffer[offset + 6u]);
+    // 7 padding
+    torus.ydir = vec3<f32>(scene_buffer[offset + 8u], scene_buffer[offset + 9u], scene_buffer[offset + 10u]);
+    // 11 padding
+    torus.majorRadius = scene_buffer[offset + 12u];
+    torus.minorRadius = scene_buffer[offset + 13u];
+    torus.angle = scene_buffer[offset + 14u];
+    // 15 padding
+    torus.color = vec3<f32>(scene_buffer[offset + 16u], scene_buffer[offset + 17u], scene_buffer[offset + 18u]);
+    torus.materialType = i32(scene_buffer[offset + 19u]);
     return torus;
 }
 
@@ -270,7 +272,8 @@ fn get_bezier_patch(index: u32) -> BezierPatch {
                  num_ellipses * 20u +
                  num_lines * 16u +
                  num_cones * 16u +
-                 num_toruses * 16u +
+                 // torus stride updated from 16u -> 20u (center + xdir + ydir + radii/angle + color/material)
+                 num_toruses * 20u +
                  index * 60u;  // bezierPatchStride = 60 (16 control points (48) + bounding box (8) + color+material (4))
     
     var bezierPatch: BezierPatch;

@@ -19,25 +19,47 @@ function degToRad(degrees: number): number {
 
 // TorusInput을 Torus로 변환 (도 → 라디안)
 function convertTorusInput(input: TorusInput): Torus {
-    // angle 계산 (항상 0도부터 시작)
-    let angle: number;
-
-    if (input.angleDegree !== undefined) {
-        angle = degToRad(input.angleDegree);
+    // Accept either angleDegree (degrees) or angle (already radians) for flexibility
+    const angle = (input as any).angle !== undefined ? (input as any).angle : degToRad(input.angleDegree ?? 360);
+    // Derive basis from either provided xdir/ydir (future) or legacy rotation Euler
+    let xdir: vec3 | undefined = (input as any).xdir;
+    let ydir: vec3 | undefined = (input as any).ydir;
+    if (!xdir) xdir = [1,0,0];
+    const Lx = Math.hypot(xdir[0],xdir[1],xdir[2]);
+    if (Lx < 1e-6) xdir = [1,0,0]; else xdir = [xdir[0]/Lx,xdir[1]/Lx,xdir[2]/Lx];
+    // If ydir given, treat it as a secondary to form a preliminary normal; else pick ref
+    let normal: vec3;
+    if (ydir) {
+        // normal = xdir × ydir (user rule: ydir will be replaced later by xdir × normal)
+        normal = [xdir[1]*ydir[2]-xdir[2]*ydir[1], xdir[2]*ydir[0]-xdir[0]*ydir[2], xdir[0]*ydir[1]-xdir[1]*ydir[0]];
+        const Ln = Math.hypot(normal[0],normal[1],normal[2]);
+        if (Ln < 1e-6) normal = Math.abs(xdir[1]) < 0.9 ? [0,1,0] : [0,0,1]; else normal = [normal[0]/Ln, normal[1]/Ln, normal[2]/Ln];
     } else {
-        // 기본값: 완전한 도넛 (360도)
-        angle = degToRad(360);
+        normal = [0,1,0];
+        if (Math.abs(xdir[1]) > 0.9) normal = [0,0,1];
     }
-
+    // ydir = xdir × normal
+    ydir = [xdir[1]*normal[2]-xdir[2]*normal[1], xdir[2]*normal[0]-xdir[0]*normal[2], xdir[0]*normal[1]-xdir[1]*normal[0]];
+    let Ly = Math.hypot(ydir[0],ydir[1],ydir[2]);
+    if (Ly < 1e-6) {
+        // fallback orthogonal
+        ydir = Math.abs(xdir[0]) < 0.9 ? [0,1,0] : [0,0,1];
+        const dp = xdir[0]*ydir[0]+xdir[1]*ydir[1]+xdir[2]*ydir[2];
+        ydir = [ydir[0]-xdir[0]*dp, ydir[1]-xdir[1]*dp, ydir[2]-xdir[2]*dp];
+        Ly = Math.hypot(ydir[0],ydir[1],ydir[2]);
+        if (Ly < 1e-6) ydir = [0,1,0], Ly = 1;
+    }
+    ydir = [ydir[0]/Ly, ydir[1]/Ly, ydir[2]/Ly];
     return {
         center: input.center,
-        rotation: input.rotation || [0, 0, 0],
+        xdir,
+        ydir,
         majorRadius: input.majorRadius,
         minorRadius: input.minorRadius,
         angle,
         color: input.color,
         material: input.material
-    };
+    } as any; // Torus interface updated elsewhere
 }
 
 // --- Scene Creation Functions ---
@@ -103,8 +125,8 @@ export function createShowcaseScene(): Scene {
         size: [2.5, 2.5],
         xdir: [1,0,0],            // 오른쪽
         ydir: [0,1,0],            // 위쪽
-        rotation: [0, 0, 0],
-        color: [1.0, 1.0, 0.2],
+        rotation: [0,0,0],
+        color: [0.7, 0.7, 0.9],
         material: MaterialTemplates.MATTE
     });
 
@@ -139,11 +161,12 @@ export function createShowcaseScene(): Scene {
 
     // 🟣 Torus (토러스) - 반원 도넛 (단순한 방식)
     const torusInput1: TorusInput = {
-        center: [22, 0, -8], // 16 → 22 (더 멀리)
-        rotation: [Math.PI/4, 0, Math.PI/6], // 토러스 자체를 기울임
+        center: [22, 0, -8],
+        xdir: [1,0,0],
+        ydir: [0,1,0],
         majorRadius: 1.0,
         minorRadius: 0.3,
-        angleDegree: 180,    // 🔥 180도만 그리기 (0도부터)
+        angleDegree: 180,
         color: [0.8, 0.2, 0.8],
         material: MaterialTemplates.MATTE
     };
@@ -151,11 +174,12 @@ export function createShowcaseScene(): Scene {
 
     // 🔸 1/4 토러스 (단순한 방식)
     const torusInput2: TorusInput = {
-        center: [26, 0, -8], // 18 → 26 (더 멀리)
-        rotation: [0, 0, 0],      // 회전 없음
+        center: [26, 0, -8],
+        xdir: [0,0,1], // alternate orientation
+        ydir: [0,1,0],
         majorRadius: 0.8,
         minorRadius: 0.2,
-        angleDegree: 90,     // 🔥 90도만 그리기 (0도부터)
+        angleDegree: 90,
         color: [0.2, 0.8, 0.8],
         material: MaterialTemplates.MATTE
     };
@@ -163,11 +187,12 @@ export function createShowcaseScene(): Scene {
 
     // 🔹 3/4 토러스 - rotation으로 시작 방향 조정 (단순한 방식)
     const torusInput3: TorusInput = {
-        center: [30, 0, -8], // 20 → 30 (더 멀리)
-        rotation: [0, 0, Math.PI/4], // Z축 중심으로 45도 회전 (시작점이 45도가 됨)
+        center: [30, 0, -8],
+        xdir: [Math.SQRT1_2,0,Math.SQRT1_2], // rotated 45 deg around Y
+        ydir: [0,1,0],
         majorRadius: 0.6,
         minorRadius: 0.15,
-        angleDegree: 270,    // 🔥 270도 그리기 (45도부터 시작하는 효과)
+        angleDegree: 270,
         color: [1.0, 0.8, 0.2],
         material: MaterialTemplates.MATTE
     };
@@ -359,25 +384,28 @@ function createTorusFieldScene(): Scene {
                 // 색상과 재질을 인덱스 기반으로 선택
                 const colorIndex = torusIndex % colors.length;
                 
-                // 랜덤한 회전
-                const rotation: vec3 = [
-                    random_double(0, Math.PI * 2),
-                    random_double(0, Math.PI * 2),
-                    random_double(0, Math.PI * 2)
-                ];
-                
+                // 랜덤한 기준 벡터 (xdir)
+                let xdir: vec3 = [random_double(-1,1), random_double(-1,1), random_double(-1,1)];
+                let nx = Math.hypot(xdir[0],xdir[1],xdir[2]);
+                if (nx < 1e-6) xdir = [1,0,0]; else xdir = [xdir[0]/nx,xdir[1]/nx,xdir[2]/nx];
+                // 랜덤 보조로 ydir 생성 후 정규직교화
+                let yseed: vec3 = [random_double(-1,1), random_double(-1,1), random_double(-1,1)];
+                let dpx = xdir[0]*yseed[0]+xdir[1]*yseed[1]+xdir[2]*yseed[2];
+                let ydir: vec3 = [yseed[0]-xdir[0]*dpx, yseed[1]-xdir[1]*dpx, yseed[2]-xdir[2]*dpx];
+                let ny = Math.hypot(ydir[0],ydir[1],ydir[2]);
+                if (ny < 1e-6) ydir = [0,1,0]; else ydir = [ydir[0]/ny, ydir[1]/ny, ydir[2]/ny];
                 // 크기 변화를 위한 랜덤 값
                 const sizeVariation = random_double(0.8, 1.2);
-                
                 toruses.push({
                     center: position,
-                    rotation: rotation,
-                    majorRadius: 1.5 * sizeVariation, // 주반지름
-                    minorRadius: 0.5 * sizeVariation, // 부반지름
-                    angleDegree: 360, // 완전한 도넛
+                    xdir,
+                    ydir,
+                    majorRadius: 1.5 * sizeVariation,
+                    minorRadius: 0.5 * sizeVariation,
+                    angle: Math.PI * 2,
                     color: colors[colorIndex],
-                    material: material // 모두 MATTE 재질
-                });
+                    material: material
+                } as any);
                 
                 torusIndex++;
             }
@@ -506,15 +534,23 @@ export function createSceneFromWorld(world: WorldPrimitives): Scene {
     }));
 
     if (world.toruses) {
-        world.toruses.forEach(t => scene.toruses.push({
-            center: t.center,
-            rotation: t.rotation,
-            majorRadius: t.majorRadius,
-            minorRadius: t.minorRadius,
-            angle: toRadians(t.angleDeg),
-            color: defaultColor,
-            material: defaultMaterial
-        }));
+        world.toruses.forEach(t => {
+            const xdir = (t as any).xdir as vec3 | undefined;
+            const ydir = (t as any).ydir as vec3 | undefined;
+            if (typeof (window as any) !== 'undefined' && (window as any).DEBUG_TORUS_BASIS) {
+                console.log(`[SceneImport:Torus] center=${t.center.map(v=>v.toFixed(3))} X=${xdir?xdir.map(n=>n.toFixed(3)):'-'} Y=${ydir?ydir.map(n=>n.toFixed(3)):'-'} angleDeg=${t.angleDeg}`);
+            }
+            scene.toruses.push({
+                center: t.center,
+                xdir: xdir as vec3,
+                ydir: ydir as vec3,
+                majorRadius: t.majorRadius,
+                minorRadius: t.minorRadius,
+                angle: toRadians(t.angleDeg),
+                color: defaultColor,
+                material: defaultMaterial
+            } as any);
+        });
     }
 
     // TODO: 다른 프리미티브 타입(예: Bezier)에 대한 변환 추가

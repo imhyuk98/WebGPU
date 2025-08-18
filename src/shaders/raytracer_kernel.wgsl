@@ -519,10 +519,32 @@ fn trace(r: Ray) -> vec3<f32> {
                 current_ray.t_max = 1000.0;
                 
             } else {
-                // LAMBERTIAN material - diffuse lighting
-                let light_dir = normalize(vec3<f32>(1.0, 1.0, 0.5));
-                let diffuse = max(dot(closest_hit.normal, light_dir), 0.2);
-                final_color = final_color * closest_hit.color * diffuse;
+                // Point light at the camera (headlamp style)
+                // Light position = camera.origin
+                let to_light = camera.origin - hit_point;
+                let dist = length(to_light);
+                let light_dir = to_light / dist;
+
+                let n = normalize(closest_hit.normal);
+                let ndotl = max(dot(n, light_dir), 0.0);
+
+                // Simple distance attenuation (tweak factor if needed). Set factor=0 for no falloff.
+                // Slightly stronger light: reduce falloff and boost diffuse/specular
+                let attenuation = 1.0 / (1.0 + 0.01 * dist * dist);
+                let light_intensity = 1.3; // tweak factor
+
+                let ambient = 0.15; // keep ambient low (can raise to 0.18 if still dark)
+                let diffuse = ndotl * attenuation * light_intensity;
+
+                // Specular using Blinn-Phong. For headlamp, view_dir ~= light_dir so highlight equals ndotl^power.
+                // Reduce spec strength to avoid blowing out.
+                let view_dir = normalize(-current_ray.direction);
+                let half_vec = normalize(light_dir + view_dir);
+                let spec_power = 48.0;
+                let specular = pow(max(dot(n, half_vec), 0.0), spec_power) * 0.35 * attenuation * light_intensity;
+
+                let lighting = ambient + diffuse + specular;
+                final_color = final_color * closest_hit.color * lighting;
                 break;
             }
         } else {

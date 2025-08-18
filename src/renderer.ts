@@ -91,23 +91,26 @@ export interface ConeGeometry {
 }
 
 export interface Torus {
-    center: vec3;      // 토러스의 중심점
-    rotation: vec3;    // 회전 각도 [x, y, z] (라디안) - 시작 방향 조정
-    majorRadius: number; // 주반지름 (중심에서 튜브 중심까지의 거리)
-    minorRadius: number; // 부반지름 (튜브의 반지름)
-    angle: number;     // 그릴 각도 (라디안, 0부터 시작)
-    color: vec3;       // 색상
+    center: vec3;      // 중심
+    xdir: vec3;        // 링 진행 방향 기준 X (주반지름 방향)
+    ydir: vec3;        // 튜브 단면 업 벡터
+    majorRadius: number;
+    minorRadius: number;
+    angle: number;     // sweep (radians)
+    color: vec3;
     material: Material;
 }
 
 // Scene 생성 시 사용할 수 있는 degree 버전 인터페이스
 export interface TorusInput {
-    center: vec3;      // 토러스의 중심점
-    rotation?: vec3;   // 회전 각도 [x, y, z] (라디안) - 시작 방향 조정
-    majorRadius: number; // 주반지름
-    minorRadius: number; // 부반지름
-    angleDegree?: number;  // 그릴 각도 (도, 기본값: 360 - 완전한 도넛)
-    color: vec3;       // 색상
+    center: vec3;
+    // basis seed (optional). If omitted we choose canonical axes.
+    xdir?: vec3;
+    ydir?: vec3;
+    majorRadius: number;
+    minorRadius: number;
+    angleDegree?: number;  // sweep degrees
+    color: vec3;
     material: Material;
 }
 
@@ -235,7 +238,7 @@ export class Renderer {
         const ellipseStride = 20; // 20 floats - already 4-byte aligned
         const lineStride = 16; // 16 floats - already 4-byte aligned
         const coneStride = 16; // 16 floats (center(3) + padding(1) + axis(3) + height(1) + radius(1) + padding(3) + color(3) + materialType(1))
-        const torusStride = 16; // 16 floats - already 4-byte aligned
+    const torusStride = 20; // 20 floats (center+xdir+ydir+radii/angle+color)
         const bezierPatchStride = 60; // 16 control points (48 floats) + bounding box (8 floats) + color+material (4 floats)
 
     const totalSizeInFloats = headerSize + 
@@ -488,24 +491,95 @@ export class Renderer {
             offset += coneStride;
         }
 
-        // Torus 데이터 패킹
+        // Torus 데이터 패킹 (plane과 동일한 robust basis 정규화/우수성 유지)
         for (const torus of scene.toruses) {
+            let xdir = torus.xdir ? [...torus.xdir] as vec3 : undefined;
+            let ydir = torus.ydir ? [...torus.ydir] as vec3 : undefined;
+            const origX = xdir ? [...xdir] : undefined;
+            const origY = ydir ? [...ydir] : undefined;
+
+            // 0. 둘 다 없으면 canonical
+            if (!xdir && !ydir) xdir = [1,0,0];
+            if (!xdir && ydir) {
+                // xdir 생성: ydir과 덜 평행한 ref 선택 후 직교화
+                const ref: vec3 = Math.abs(ydir[0]) < 0.9 ? [1,0,0] : [0,0,1];
+                let dp = ref[0]*ydir[0]+ref[1]*ydir[1]+ref[2]*ydir[2];
+                xdir = [ref[0]-ydir[0]*dp, ref[1]-ydir[1]*dp, ref[2]-ydir[2]*dp] as vec3;
+            }
+            if (!ydir && xdir) {
+                const ref: vec3 = Math.abs(xdir[0]) < 0.9 ? [1,0,0] : [0,1,0];
+                let dp = ref[0]*xdir[0]+ref[1]*xdir[1]+ref[2]*xdir[2];
+                ydir = [ref[0]-xdir[0]*dp, ref[1]-xdir[1]*dp, ref[2]-xdir[2]*dp] as vec3;
+            }
+
+            // 1. xdir 정규화 / degeneracy 처리
+            if (!xdir || Math.hypot(xdir[0],xdir[1],xdir[2]) < 1e-6) xdir = [1,0,0];
+            else xdir = normalize(xdir);
+
+            // 2. ydir 직교화 → 정규화 (없거나 퇴화 시 cross 기반)
+            if (!ydir || Math.hypot(ydir[0],ydir[1],ydir[2]) < 1e-6) {
+                // create via cross with a ref not parallel to xdir
+                const ref: vec3 = Math.abs(xdir[1]) < 0.9 ? [0,1,0] : [0,0,1];
+                const c: vec3 = [xdir[1]*ref[2]-xdir[2]*ref[1], xdir[2]*ref[0]-xdir[0]*ref[2], xdir[0]*ref[1]-xdir[1]*ref[0]];
+                let Lc = Math.hypot(c[0],c[1],c[2]);
+                ydir = Lc < 1e-6 ? [0,1,0] : [c[0]/Lc, c[1]/Lc, c[2]/Lc];
+            } else {
+                let dpx = xdir[0]*ydir[0]+xdir[1]*ydir[1]+xdir[2]*ydir[2];
+                ydir = [ydir[0]-xdir[0]*dpx, ydir[1]-xdir[1]*dpx, ydir[2]-xdir[2]*dpx] as vec3;
+                let Ly = Math.hypot(ydir[0],ydir[1],ydir[2]);
+                if (Ly < 1e-6) {
+                    ydir = [0,1,0];
+                    if (Math.abs(xdir[1]) > 0.9) ydir = [1,0,0];
+                } else ydir = [ydir[0]/Ly, ydir[1]/Ly, ydir[2]/Ly];
+            }
+
+            // 3. normal 및 right-handed 보정
+            let n: vec3 = [ xdir[1]*ydir[2]-xdir[2]*ydir[1], xdir[2]*ydir[0]-xdir[0]*ydir[2], xdir[0]*ydir[1]-xdir[1]*ydir[0] ];
+            let Ln = Math.hypot(n[0],n[1],n[2]);
+            if (Ln < 1e-6) { // 재시도
+                const ref: vec3 = Math.abs(xdir[0]) < 0.9 ? [1,0,0] : [0,1,0];
+                ydir = normalize([ref[0]-xdir[0]*(xdir[0]*ref[0]+xdir[1]*ref[1]+xdir[2]*ref[2]), ref[1]-xdir[1]*(xdir[0]*ref[0]+xdir[1]*ref[1]+xdir[2]*ref[2]), ref[2]-xdir[2]*(xdir[0]*ref[0]+xdir[1]*ref[1]+xdir[2]*ref[2])] as vec3);
+                n = [ xdir[1]*ydir[2]-xdir[2]*ydir[1], xdir[2]*ydir[0]-xdir[0]*ydir[2], xdir[0]*ydir[1]-xdir[1]*ydir[0] ];
+                Ln = Math.hypot(n[0],n[1],n[2]);
+            }
+            if (Ln > 1e-6) n = [n[0]/Ln, n[1]/Ln, n[2]/Ln]; else n = [0,1,0];
+
+            // 4. 수평( normal ~ Y ) 안정화: plane과 유사, ydir이 +Z 쪽 향하도록 (시각적 일관성)
+            if (Math.abs(n[1]) > 0.9 && ydir[2] < 0) {
+                xdir = [-xdir[0], -xdir[1], -xdir[2]] as vec3;
+                ydir = [-ydir[0], -ydir[1], -ydir[2]] as vec3;
+            }
+
+            // 5. right-handed: cross(xdir, ydir) ≈ n, 아니라면 ydir 뒤집기
+            const c2 = [ xdir[1]*ydir[2]-xdir[2]*ydir[1], xdir[2]*ydir[0]-xdir[0]*ydir[2], xdir[0]*ydir[1]-xdir[1]*ydir[0] ];
+            if (c2[0]*n[0]+c2[1]*n[1]+c2[2]*n[2] < 0) {
+                ydir = [-ydir[0], -ydir[1], -ydir[2]] as vec3;
+            }
+
+            if (typeof (window as any) !== 'undefined' && (window as any).DEBUG_TORUS_BASIS) {
+                const dotXY = (xdir[0]*ydir[0]+xdir[1]*ydir[1]+xdir[2]*ydir[2]).toFixed(4);
+                console.log(`[TorusPack:init] center=${torus.center.map(v=>v.toFixed(3))} X0=${origX?origX.map(v=>v.toFixed(3)):'-'} Y0=${origY?origY.map(v=>v.toFixed(3)):'-'} -> X=${xdir.map(v=>v.toFixed(3))} Y=${ydir.map(v=>v.toFixed(3))} dotXY=${dotXY} R=${torus.majorRadius.toFixed(3)} r=${torus.minorRadius.toFixed(3)} angleDeg=${(torus.angle*180/Math.PI).toFixed(1)}`);
+            }
             sceneData[offset + 0] = torus.center[0];
             sceneData[offset + 1] = torus.center[1];
             sceneData[offset + 2] = torus.center[2];
-            sceneData[offset + 3] = 0; // padding
-            sceneData[offset + 4] = torus.rotation[0];
-            sceneData[offset + 5] = torus.rotation[1];
-            sceneData[offset + 6] = torus.rotation[2];
-            sceneData[offset + 7] = 0; // padding
-            sceneData[offset + 8] = torus.majorRadius;
-            sceneData[offset + 9] = torus.minorRadius;
-            sceneData[offset + 10] = torus.angle;
-            sceneData[offset + 11] = 0; // padding (예전 endAngle 자리)
-            sceneData[offset + 12] = torus.color[0];
-            sceneData[offset + 13] = torus.color[1];
-            sceneData[offset + 14] = torus.color[2];
-            sceneData[offset + 15] = torus.material.type;
+            sceneData[offset + 3] = 0;
+            sceneData[offset + 4] = xdir[0];
+            sceneData[offset + 5] = xdir[1];
+            sceneData[offset + 6] = xdir[2];
+            sceneData[offset + 7] = 0;
+            sceneData[offset + 8] = ydir[0];
+            sceneData[offset + 9] = ydir[1];
+            sceneData[offset + 10] = ydir[2];
+            sceneData[offset + 11] = 0;
+            sceneData[offset + 12] = torus.majorRadius;
+            sceneData[offset + 13] = torus.minorRadius;
+            sceneData[offset + 14] = torus.angle;
+            sceneData[offset + 15] = 0;
+            sceneData[offset + 16] = torus.color[0];
+            sceneData[offset + 17] = torus.color[1];
+            sceneData[offset + 18] = torus.color[2];
+            sceneData[offset + 19] = torus.material.type;
             offset += torusStride;
         }
 
@@ -971,7 +1045,7 @@ export class Renderer {
         const ellipseStride = 20;
         const lineStride = 16;
         const coneStride = 16; // Updated to 16 for 4-byte alignment
-        const torusStride = 16;
+    const torusStride = 20; // center(4)+xdir(4)+ydir(4)+radii/angle(4)+color/material(4)
         const bezierPatchStride = 60; // 16 control points (48 floats) + bounding box (8 floats) + color+material (4 floats)
 
         const totalSizeInFloats = headerSize + 
@@ -1202,24 +1276,68 @@ export class Renderer {
             offset += coneStride;
         }
 
-        // Toruses
+        // Toruses (plane-style robust basis)
         for (const torus of scene.toruses) {
+            let xdir = torus.xdir ? [...torus.xdir] as vec3 : undefined;
+            let ydir = torus.ydir ? [...torus.ydir] as vec3 : undefined;
+            if (!xdir && !ydir) xdir = [1,0,0];
+            if (!xdir && ydir) {
+                const ref: vec3 = Math.abs(ydir[0]) < 0.9 ? [1,0,0] : [0,0,1];
+                let dp = ref[0]*ydir[0]+ref[1]*ydir[1]+ref[2]*ydir[2];
+                xdir = [ref[0]-ydir[0]*dp, ref[1]-ydir[1]*dp, ref[2]-ydir[2]*dp] as vec3;
+            }
+            if (!ydir && xdir) {
+                const ref: vec3 = Math.abs(xdir[0]) < 0.9 ? [1,0,0] : [0,1,0];
+                let dp = ref[0]*xdir[0]+ref[1]*xdir[1]+ref[2]*xdir[2];
+                ydir = [ref[0]-xdir[0]*dp, ref[1]-xdir[1]*dp, ref[2]-xdir[2]*dp] as vec3;
+            }
+            if (!xdir || Math.hypot(xdir[0],xdir[1],xdir[2]) < 1e-6) xdir = [1,0,0]; else xdir = normalize(xdir);
+            if (!ydir || Math.hypot(ydir[0],ydir[1],ydir[2]) < 1e-6) {
+                const ref: vec3 = Math.abs(xdir[1]) < 0.9 ? [0,1,0] : [0,0,1];
+                const c: vec3 = [xdir[1]*ref[2]-xdir[2]*ref[1], xdir[2]*ref[0]-xdir[0]*ref[2], xdir[0]*ref[1]-xdir[1]*ref[0]];
+                let Lc = Math.hypot(c[0],c[1],c[2]);
+                ydir = Lc < 1e-6 ? [0,1,0] : [c[0]/Lc, c[1]/Lc, c[2]/Lc];
+            } else {
+                let dpx = xdir[0]*ydir[0]+xdir[1]*ydir[1]+xdir[2]*ydir[2];
+                ydir = [ydir[0]-xdir[0]*dpx, ydir[1]-xdir[1]*dpx, ydir[2]-xdir[2]*dpx] as vec3;
+                let Ly = Math.hypot(ydir[0],ydir[1],ydir[2]);
+                if (Ly < 1e-6) ydir = [0,1,0]; else ydir = [ydir[0]/Ly, ydir[1]/Ly, ydir[2]/Ly];
+            }
+            let n: vec3 = [ xdir[1]*ydir[2]-xdir[2]*ydir[1], xdir[2]*ydir[0]-xdir[0]*ydir[2], xdir[0]*ydir[1]-xdir[1]*ydir[0] ];
+            let Ln = Math.hypot(n[0],n[1],n[2]);
+            if (Ln < 1e-6) {
+                const ref: vec3 = Math.abs(xdir[0]) < 0.9 ? [1,0,0] : [0,1,0];
+                ydir = normalize([ref[0]-xdir[0]*(xdir[0]*ref[0]+xdir[1]*ref[1]+xdir[2]*ref[2]), ref[1]-xdir[1]*(xdir[0]*ref[0]+xdir[1]*ref[1]+xdir[2]*ref[2]), ref[2]-xdir[2]*(xdir[0]*ref[0]+xdir[1]*ref[1]+xdir[2]*ref[2])] as vec3);
+                n = [ xdir[1]*ydir[2]-xdir[2]*ydir[1], xdir[2]*ydir[0]-xdir[0]*ydir[2], xdir[0]*ydir[1]-xdir[1]*ydir[0] ];
+                Ln = Math.hypot(n[0],n[1],n[2]);
+            }
+            if (Ln > 1e-6) n = [n[0]/Ln, n[1]/Ln, n[2]/Ln];
+            if (Math.abs(n[1]) > 0.9 && ydir[2] < 0) {
+                xdir = [-xdir[0], -xdir[1], -xdir[2]] as vec3;
+                ydir = [-ydir[0], -ydir[1], -ydir[2]] as vec3;
+            }
+            const c2 = [ xdir[1]*ydir[2]-xdir[2]*ydir[1], xdir[2]*ydir[0]-xdir[0]*ydir[2], xdir[0]*ydir[1]-xdir[1]*ydir[0] ];
+            if (c2[0]*n[0]+c2[1]*n[1]+c2[2]*n[2] < 0) ydir = [-ydir[0], -ydir[1], -ydir[2]] as vec3;
             sceneData[offset + 0] = torus.center[0];
             sceneData[offset + 1] = torus.center[1];
             sceneData[offset + 2] = torus.center[2];
             sceneData[offset + 3] = 0;
-            sceneData[offset + 4] = torus.rotation[0];
-            sceneData[offset + 5] = torus.rotation[1];
-            sceneData[offset + 6] = torus.rotation[2];
+            sceneData[offset + 4] = xdir[0];
+            sceneData[offset + 5] = xdir[1];
+            sceneData[offset + 6] = xdir[2];
             sceneData[offset + 7] = 0;
-            sceneData[offset + 8] = torus.majorRadius;
-            sceneData[offset + 9] = torus.minorRadius;
-            sceneData[offset + 10] = torus.angle;
-            sceneData[offset + 11] = 0; // padding (예전 endAngle 자리)
-            sceneData[offset + 12] = torus.color[0];
-            sceneData[offset + 13] = torus.color[1];
-            sceneData[offset + 14] = torus.color[2];
-            sceneData[offset + 15] = torus.material.type;
+            sceneData[offset + 8] = ydir[0];
+            sceneData[offset + 9] = ydir[1];
+            sceneData[offset + 10] = ydir[2];
+            sceneData[offset + 11] = 0;
+            sceneData[offset + 12] = torus.majorRadius;
+            sceneData[offset + 13] = torus.minorRadius;
+            sceneData[offset + 14] = torus.angle;
+            sceneData[offset + 15] = 0;
+            sceneData[offset + 16] = torus.color[0];
+            sceneData[offset + 17] = torus.color[1];
+            sceneData[offset + 18] = torus.color[2];
+            sceneData[offset + 19] = torus.material.type;
             offset += torusStride;
         }
 

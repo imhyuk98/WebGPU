@@ -59,6 +59,9 @@ const DEG = (rad: number) => (rad * 180) / Math.PI;
 const HEXDUMP_MAX = 64;
 const MAX_REC_LEN = 128 * 1024 * 1024;
 const APPLY_ZUP_TO_YUP = true; // 필요 시 true
+// Torus basis canonicalization flags (kept minimal for generality)
+// Avoid ad-hoc global flips; only normalize & orthogonalize.
+const FLIP_TORUS_YDIR = true; // 실험: ydir 방향 반전
 
 // 로그 보정(유효치가 없을 때 기본값으로 채워 배열에라도 담기)
 const RELAX_FOR_LOG = true;
@@ -311,20 +314,24 @@ function sym_Plane(r: BinReader, len: number): SymPartial {
   return { ok: true, consumed: r.offset - start, info: { center, normal, xdir, ydir, w, h } };
 }
 function sym_Revolved(r: BinReader, len: number): SymPartial {
-  const start = r.offset;
-  if (len < 24) return { ok: false, consumed: 0, why: "len < 24" };
-  const center = r.readVec3();
-  let xdir: Vec3 | undefined, ydir: Vec3 | undefined;
-  let major: number | undefined, minor: number | undefined, angle: number | undefined;
-  let remain = len - (r.offset - start);
-  if (remain >= 48) { xdir = r.readVec3(); ydir = r.readVec3(); remain -= 48; }
-  if (remain >= 24) { major = r.f64(); minor = r.f64(); angle = r.f64(); remain -= 24; }
-  if (remain > 0) r.skip(remain);
-  return {
-    ok: true, consumed: r.offset - start,
-    // [★추가됨] precision 정보 추가
-    info: { center, xdir, ydir, major, minor, angle, angleDeg: angle !== undefined ? DEG(angle) : undefined, precision: "f64" }
-  };
+    // Primary layout (100 bytes): int32 ownerId + center(24) + xdir(24) + ydir(24) + major/minor/angle(24)
+    // Fallback layout (96 bytes): center + xdir + ydir + major + minor + angle (no ownerId)
+    const start = r.offset;
+    if (len < 96) return { ok:false, consumed:0, why:`len < 96 (got ${len})` };
+    let ownerId: number | undefined;
+    let center: Vec3; let xdir: Vec3; let ydir: Vec3; let major: number; let minor: number; let angle: number;
+    if (len >= 100) {
+        ownerId = r.i32();
+    }
+    center = r.readVec3();
+    xdir = r.readVec3();
+    ydir = r.readVec3();
+    major = r.f64();
+    minor = r.f64();
+    angle = r.f64();
+    const consumed = r.offset - start;
+    if (consumed < len) r.skip(len - consumed);
+    return { ok:true, consumed: r.offset - start, info: { ownerId, center, xdir, ydir, major, minor, angle, angleDeg: DEG(angle), precision: "f64" } };
 }
 function sym_myEllipse(r: BinReader, len: number): SymPartial {
   // ... (f64 구현, 변경 없음)
@@ -413,22 +420,23 @@ function sym_Generic(r: BinReader, len: number): SymPartial {
 // ── [★추가됨] 심볼(로컬) 디코더들 (f32 폴백)
 
 function sym_Revolved_f32(r: BinReader, len: number): SymPartial {
-  const start = r.offset;
-  // Center (12 bytes)
-  if (len < 12) return { ok: false, consumed: 0, why: "len < 12 (f32 center)" };
-  const center = r.readVec3f32();
-  let xdir: Vec3 | undefined, ydir: Vec3 | undefined;
-  let major: number | undefined, minor: number | undefined, angle: number | undefined;
-  let remain = len - (r.offset - start);
-  // Dirs (12+12 = 24 bytes)
-  if (remain >= 24) { xdir = r.readVec3f32(); ydir = r.readVec3f32(); remain -= 24; }
-  // Params (4+4+4 = 12 bytes)
-  if (remain >= 12) { major = r.f32(); minor = r.f32(); angle = r.f32(); remain -= 12; }
-  if (remain > 0) r.skip(remain);
-  return {
-    ok: true, consumed: r.offset - start,
-    info: { center, xdir, ydir, major, minor, angle, angleDeg: angle !== undefined ? DEG(angle) : undefined, precision: "f32" }
-  };
+    // f32 layout analog: int32 ownerId (4) + center(12) + xdir(12) + ydir(12) + major/minor/angle (12) = 52 bytes
+    const start = r.offset;
+    if (len < 52) return { ok:false, consumed:0, why:`len < 52 (f32 revolved)` };
+    const ownerId = r.i32();
+    const center = r.readVec3f32();
+    const xdir = r.readVec3f32();
+    const ydir = r.readVec3f32();
+    const major = r.f32();
+    const minor = r.f32();
+    const angle = r.f32();
+    const consumed = r.offset - start;
+    if (consumed < len) r.skip(len - consumed);
+    return {
+        ok:true,
+        consumed: r.offset - start,
+        info: { ownerId, center, xdir, ydir, major, minor, angle, angleDeg: DEG(angle), precision: "f32" }
+    };
 }
 
 function sym_HermiteFace_Min_f32(r: BinReader, len: number): SymPartial {
@@ -869,7 +877,7 @@ export type WPHermiteFace = {
 };
 
 // (옵션) Revolved를 토러스처럼 쓰려면 타입 확장 가능(보조)
-export type WPTorus    = { center: Vec3; rotation: Vec3; majorRadius: number; minorRadius: number; angleDeg: number; precision?: string };
+export type WPTorus    = { center: Vec3; xdir: Vec3; ydir: Vec3; majorRadius: number; minorRadius: number; angleDeg: number; precision?: string };
 export type WPBezier   = { ctrl: any };
 
 export interface WorldPrimitives {
@@ -1034,10 +1042,99 @@ function pushFromLocal(world: WorldPrimitives, name: string, info: any, tr: Tran
       // (보조) major/minor가 유효하면 torus로도 보관
       const maj = info.major, min = info.minor;
       if (world.toruses && finite(maj) && finite(min) && maj > 0 && min > 0) {
-        const rotation: Vec3 = xd ?? [0,0,0];
-        const angleDeg = Number.isFinite(info.angleDeg) ? info.angleDeg : 360;
-        // [★추가됨] precision 전달
-        world.toruses!.push({ center: c, rotation, majorRadius: maj, minorRadius: min, angleDeg, precision });
+                const rawAngle = typeof info.angle === 'number' ? info.angle : undefined; // 원본 파일 값
+                const computedAngleDeg = Number.isFinite(info.angleDeg) ? info.angleDeg : (Number.isFinite(rawAngle) ? DEG(rawAngle as number) : 360);
+
+                // 각도 정규화 heuristic (이전 로직 유지)
+                let finalAngleDeg = computedAngleDeg;
+                if (Number.isFinite(rawAngle)) {
+                    if (computedAngleDeg > 720 && rawAngle! <= 360) {
+                        finalAngleDeg = rawAngle!; // double convert 방지
+                    } else if (rawAngle! <= (Math.PI * 2 + 0.5)) {
+                        finalAngleDeg = Math.min(computedAngleDeg, 360);
+                    } else if (rawAngle! > 360 && rawAngle! < 360*20) {
+                        finalAngleDeg = 360;
+                    } else if (computedAngleDeg > 360*20) {
+                        finalAngleDeg = 360;
+                    }
+                } else if (finalAngleDeg > 360) {
+                    finalAngleDeg = 360;
+                }
+
+                // ---- 핵심 수정 ----
+                // 기존 구현은 xdir 벡터를 Euler 회전(deg)으로 오해하여 잘못된 기저를 생성
+                // 이제는 파싱/트랜스폼된 xd, yd (벡터) 를 직접 사용해 직교 정규화한다.
+                let bx = xd ? [...xd] as Vec3 : [1,0,0];
+                let by = yd ? [...yd] as Vec3 : undefined;
+
+                // 1) xdir 정규화 (길이 부족 시 fallback)
+                let Lx = Math.hypot(bx[0],bx[1],bx[2]);
+                if (Lx < 1e-6 || !isFinite(Lx)) bx = [1,0,0]; else bx = [bx[0]/Lx, bx[1]/Lx, bx[2]/Lx];
+
+                // 2) ydir 존재하면 x에 대해 직교화, 없으면 fallback 생성
+                if (by) {
+                    let Ly = Math.hypot(by[0],by[1],by[2]);
+                    if (Ly < 1e-6 || !isFinite(Ly)) by = undefined;
+                }
+                if (by) {
+                    // Gram-Schmidt
+                    let dp = bx[0]*by[0] + bx[1]*by[1] + bx[2]*by[2];
+                    by = [by[0]-bx[0]*dp, by[1]-bx[1]*dp, by[2]-bx[2]*dp];
+                    let Ly = Math.hypot(by[0],by[1],by[2]);
+                    if (Ly < 1e-6 || !isFinite(Ly)) by = undefined; else by = [by[0]/Ly, by[1]/Ly, by[2]/Ly];
+                }
+                if (!by) {
+                    // bx와 가장 덜 평행한 ref 선택 후 cross로 만들기
+                    const ref: Vec3 = Math.abs(bx[0]) < 0.8 ? [1,0,0] : [0,1,0];
+                    // provisional secondary via cross
+                    let tmp = cross(bx as Vec3, ref as Vec3) as Vec3;
+                    let Lt = Math.hypot(tmp[0],tmp[1],tmp[2]);
+                    if (Lt < 1e-6) tmp = cross(bx as Vec3, [0,0,1] as Vec3) as Vec3;
+                    Lt = Math.hypot(tmp[0],tmp[1],tmp[2]);
+                    by = (Lt < 1e-6 ? [0,1,0] : [tmp[0]/Lt, tmp[1]/Lt, tmp[2]/Lt]) as Vec3;
+                }
+
+                // Store basis directly (only global coord system fixCoordSystem already applied to xd/yd earlier via rot())
+                // Canonicalize: xdir = vector from center to start (normalize bx), normal = cross(bx, by), ydir = cross(xdir, normal)
+                let cx = bx as Vec3; // start vector direction
+                let Lcx = Math.hypot(cx[0],cx[1],cx[2]);
+                if (Lcx < 1e-6 || !isFinite(Lcx)) cx = [1,0,0]; else cx = [cx[0]/Lcx, cx[1]/Lcx, cx[2]/Lcx];
+                // Recover normal from user rule y = x × normal ⇒ normal = - (x × y)
+                let n = cross(cx as Vec3, by as Vec3); // this equals -normal
+                let Ln = Math.hypot(n[0],n[1],n[2]);
+                if (Ln < 1e-6 || !isFinite(Ln)) {
+                    const ref: Vec3 = Math.abs(cx[1]) < 0.9 ? [0,1,0] : [0,0,1];
+                    n = cross(cx, ref); // still -normal form
+                    Ln = Math.hypot(n[0],n[1],n[2]);
+                    if (Ln < 1e-6) n = [0,0,1], Ln = 1;
+                }
+                // true normal
+                n = [-n[0]/Ln, -n[1]/Ln, -n[2]/Ln];
+                // Recompute y from rule y = x × normal
+                let cy = cross(cx, n);
+                let Ly = Math.hypot(cy[0],cy[1],cy[2]);
+                if (Ly < 1e-6 || !isFinite(Ly)) {
+                    // fallback orthogonal
+                    cy = Math.abs(cx[0]) < 0.9 ? [0,1,0] : [0,0,1];
+                    const dp = cx[0]*cy[0]+cx[1]*cy[1]+cx[2]*cy[2];
+                    cy = [cy[0]-cx[0]*dp, cy[1]-cx[1]*dp, cy[2]-cx[2]*dp];
+                    Ly = Math.hypot(cy[0],cy[1],cy[2]);
+                    if (Ly < 1e-6) cy = [0,1,0], Ly = 1;
+                }
+                cy = [cy[0]/Ly, cy[1]/Ly, cy[2]/Ly];
+                // Preserve original ydir orientation if close but flipped
+                if (by) {
+                    const dpy = (by[0]*cy[0]+by[1]*cy[1]+by[2]*cy[2]);
+                    if (dpy < 0) { cy = [-cy[0],-cy[1],-cy[2]] as Vec3; }
+                }
+                if (FLIP_TORUS_YDIR) {
+                    cy = [-cy[0], -cy[1], -cy[2]] as Vec3;
+                }
+                // (No forced global up or 90° rotation; keep raw geometric relationship)
+                world.toruses!.push({ center: c as Vec3, xdir: cx as Vec3, ydir: cy as Vec3, majorRadius: maj, minorRadius: min, angleDeg: finalAngleDeg, precision });
+                if (typeof (window as any) !== 'undefined' && (window as any).DEBUG_TORUS_BASIS) {
+                    console.log(`[Revolved→TorusBasis] center=${fmt3(c as Vec3)} Xraw=${fmt3(bx as Vec3)} Yraw=${fmt3(by as Vec3)} -> X=${fmt3(cx)} Y=${fmt3(cy)} n=${fmt3(n)} maj=${maj?.toFixed(3)} min=${min?.toFixed(3)} angleDeg=${finalAngleDeg.toFixed(2)}`);
+                }
       }
       break;
     }
@@ -1112,10 +1209,17 @@ export async function extractWorldPrimitives(file: File): Promise<WorldPrimitive
     const decs = SYMBOL_DECODERS[effectiveType as ShapeType];
 
     const before = r.offset;
-    // 1) prefix 정렬
-    const { picked } = symBeginAutoEx(r, len);
-    const afterPrefix = r.offset;
-    const remainLen = len - (afterPrefix - before); // = len - picked
+    // 1) prefix 정렬 (Revolved는 고정 레이아웃이므로 skip)
+    let picked = 0;
+    let afterPrefix: number;
+    if (effectiveType === ShapeType.Revolved) {
+        afterPrefix = r.offset; // no skip
+    } else {
+        const resPick = symBeginAutoEx(r, len);
+        picked = resPick.picked;
+        afterPrefix = r.offset;
+    }
+    const remainLen = len - (afterPrefix - before);
 
     try {
       if (decs && decs.length > 0) {
@@ -1257,7 +1361,7 @@ function summarizeKind(world: WorldPrimitives) {
     Ellipse: world.ellipses.length,
     Line: world.lines.length,
     Cone: world.cones.length,
-    Revolved: world.revolveds.length,
+    // Revolved removed from log output (merged into Torus conceptually if needed)
     HermiteFace: world.hermiteFaces.length,
     EllipseCurve: world.ellipseCurves.length,
     CircleCurve: world.circleCurves.length,
@@ -1267,7 +1371,7 @@ function summarizeKind(world: WorldPrimitives) {
     BezierPatch: world.bezierPatches?.length ?? 0,
   };
   // [★추가됨] Mixed Surfaces 요약 추가 (예상 출력 형식 맞춤용)
-  (summary as any)["Mixed Surfaces"] = world.revolveds.length + world.hermiteFaces.length;
+    (summary as any)["Mixed Surfaces"] = world.hermiteFaces.length;
   return summary;
 }
 
@@ -1298,9 +1402,7 @@ function logWorldArrays(world: WorldPrimitives, samplePerKind = 5, collapsed = f
 
   // 새로 추가된 섹션(항상 출력)
   // [★변경됨] precision 정보 추가
-  print("Revolved", world.revolveds, (p) =>
-    `center=${fmt3(p.center)} major=${p.major ?? "-"} minor=${p.minor ?? "-"} angleDeg=${p.angleDeg ?? "-"} precision=${p.precision ?? "-"}`
-  );
+    // Revolved logging removed per request
   print("HermiteFace", world.hermiteFaces, (p) =>
     `p00=${fmt3(p.p00)} pMN=${fmt3(p.pMN)} note=${p.note ?? "-"}`
   );
@@ -1312,7 +1414,7 @@ function logWorldArrays(world: WorldPrimitives, samplePerKind = 5, collapsed = f
 
   if (world.toruses) {
     // [★변경됨] precision 정보 추가
-    print("Torus", world.toruses, (p) => `center=${fmt3(p.center)} R=${p.majorRadius} r=${p.minorRadius} angleDeg=${p.angleDeg} precision=${p.precision ?? "-"}`);
+    print("Torus", world.toruses, (p) => `center=${fmt3(p.center)} R=${p.majorRadius} r=${p.minorRadius} angleDeg=${p.angleDeg} X=${fmt3((p as any).xdir)} Y=${fmt3((p as any).ydir)} precision=${p.precision ?? "-"}`);
   }
   if (world.bezierPatches) {
     print("BezierPatch", world.bezierPatches, (_p, i) => `#${i}`);

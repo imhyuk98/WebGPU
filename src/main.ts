@@ -88,11 +88,8 @@ class App {
                     break;
                 case 'b':
                 case 'B':
-                    // BVH 토글
-                    this.renderer.enableBVH = !this.renderer.enableBVH;
-                    console.log(`BVH: ${this.renderer.enableBVH ? 'Enabled' : 'Disabled'}`);
-                    // 씬을 다시 초기화해야 BVH 변경사항이 적용됨
-                    this.switchScene(this.currentSceneType);
+                    // BVH 토글 (디바이스/씬 재초기화 없이)
+                    this.renderer.toggleBVH();
                     break;
                 default:
                     return; // 다른 키는 무시

@@ -157,6 +157,12 @@ export class Renderer {
     color_buffer: GPUTexture; // Ray tracing 결과를 저장할 2D 이미지
     color_buffer_view: GPUTextureView; // GPU는 텍스처에 접근할 수 없기에 View를 통해 접근
     sampler: GPUSampler; // 텍스처에서 색상을 읽을 때의 방법 정의
+    // Accumulation (ping-pong)
+    accum_textures: (GPUTexture | null)[] = [null, null]; // 누적 결과 (rgba16float) 2개
+    accum_views: (GPUTextureView | null)[] = [null, null];
+    frameCounter: number = 0; // 지금까지 누적된 프레임 수 (현재 프레임 제외)
+    cameraChangedThisFrame: boolean = true;
+    private lastAccumPrevIndex: number = -1; // 마지막으로 BindGroup에 사용한 prev 인덱스
 
     // Pipeline objects
     ray_tracing_pipeline: GPUComputePipeline // Ray tracing 계산을 수행하는 GPU 프로그램
@@ -171,17 +177,27 @@ export class Renderer {
     // Frustum Culling
     enableFrustumCulling: boolean = false; // BVH 테스트를 위해 임시 비활성화
     originalScene: Scene; // 원본 Scene 저장
-    sceneBuffer: GPUBuffer; // Scene 버퍼를 재사용하기 위해 저장
+    sceneBuffer: GPUBuffer | null = null; // 재사용 가능한 Scene 버퍼 (nullable)
+    private sceneBufferDevice: GPUDevice | null = null; // 버퍼 생성한 디바이스 추적
+    private sceneBufferCapacity: number = 0; // 현재 할당 용량(bytes)
+    private bvhBufferCapacity: number = 0;
+    private primitiveIndexBufferCapacity: number = 0;
+    private primitiveInfoBufferCapacity: number = 0;
+    private dummyBuffer: GPUBuffer | null = null;
     ray_tracing_bind_group_layout: GPUBindGroupLayout; // BindGroup 레이아웃 저장
 
     // BVH System
     enableBVH: boolean = true; // BVH 활성화 여부
+    private currentScene: Scene | null = null; // 마지막 로드한 씬 (BVH 토글용)
     bvhBuilder: BVHBuilder; // BVH 빌더
     bvhNodes: BVHNode[] = []; // BVH 노드들
     bvhPrimitiveIndices: number[] = []; // BVH primitive 인덱스들
     bvhBuffer: GPUBuffer; // BVH 노드 버퍼
     primitiveIndexBuffer: GPUBuffer; // Primitive 인덱스 버퍼
     primitiveInfoBuffer: GPUBuffer; // Primitive 타입 정보 버퍼
+    private _lastCamFrom: vec3 | null = null;
+    private _lastCamAt: vec3 | null = null;
+    private _accumulatedStillFrames: number = 0;
 
     // canvas 연결
     constructor(canvas: HTMLCanvasElement){
@@ -189,39 +205,100 @@ export class Renderer {
         this.bvhBuilder = new BVHBuilder();
     }
 
+    // 모든 관련 GPU 버퍼/텍스처 상태에 맞춰 Ray Tracing BindGroup을 재생성
+    private rebuildRayTracingBindGroup(prevView?: GPUTextureView, nextView?: GPUTextureView) {
+        // sceneBuffer나 다른 필수 버퍼가 아직 없다면 스킵
+        if (!this.sceneBuffer || !this.uniform_buffer || !this.camera_buffer || !this.color_buffer_view) return;
+        const bvhBuf = this.bvhBuffer || this.getDummyBuffer();
+        const primIndexBuf = this.primitiveIndexBuffer || this.getDummyBuffer();
+        const primInfoBuf = this.primitiveInfoBuffer || this.getDummyBuffer();
+
+        // prev/next 미지정 시 현재 frameCounter 기준 ping-pong 선택
+        let autoPrev: GPUTextureView | undefined;
+        let autoNext: GPUTextureView | undefined;
+        if (!prevView || !nextView) {
+            const pIdx = this.frameCounter % 2;
+            const nIdx = (pIdx + 1) % 2;
+            autoPrev = this.accum_views[pIdx] ?? undefined;
+            autoNext = this.accum_views[nIdx] ?? undefined;
+            if (autoPrev && autoNext) {
+                prevView = prevView ?? autoPrev;
+                nextView = nextView ?? autoNext;
+                this.lastAccumPrevIndex = pIdx;
+            }
+        }
+
+        // 전달된 prev/next 없으면 color_buffer_view fallback (초기화 단계)
+        const _prev = prevView ?? this.color_buffer_view;
+        const _next = nextView ?? this.color_buffer_view;
+        this.ray_tracing_bind_group = this.device.createBindGroup({
+            layout: this.ray_tracing_bind_group_layout,
+            entries: [
+                { binding: 0, resource: this.color_buffer_view },
+                { binding: 1, resource: { buffer: this.sceneBuffer } },
+                { binding: 2, resource: { buffer: this.uniform_buffer } },
+                { binding: 3, resource: { buffer: this.camera_buffer } },
+                { binding: 4, resource: { buffer: bvhBuf } },
+                { binding: 5, resource: { buffer: primIndexBuf } },
+                { binding: 6, resource: { buffer: primInfoBuf } },
+                { binding: 7, resource: _prev },
+                { binding: 8, resource: _next }
+            ]
+        });
+    }
+
    // Initialize now takes a Scene object
    async Initialize(scene: Scene) {
-
-        // 원본 Scene 저장 (Frustum Culling용)
+        // 디바이스/자산 최초 1회만 생성
+        if (!this.device) {
+            await this.setupDevice();
+            await this.createAssets();
+        }
         this.originalScene = scene;
-
-        await this.setupDevice();
-
-        await this.createAssets();
-    
-        // Pass the scene to makePipeline
+        this.currentScene = scene;
+        // 새 씬으로 전환 시 누적 초기화
+        this.frameCounter = 0;
+        this.cameraChangedThisFrame = true;
+        this.lastAccumPrevIndex = -1;
+        this.clearAccumulation();
         await this.makePipeline(scene);
+    }
+
+    private clearAccumulation() {
+        if (!this.device || !this.accum_textures[0]) return;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+        const pixelBytes = 8; // rgba16float = 4*16bit = 8 bytes
+        const zero = new Uint8Array(Math.min(1024 * 1024, w * h * pixelBytes)); // chunk buffer (1MB max)
+        for (let t = 0; t < 2; t++) {
+            const tex = this.accum_textures[t];
+            if (!tex) continue;
+            // 큰 텍스처를 chunk로 채우기 (행 단위)
+            const rowBytes = w * pixelBytes;
+            const rowsPerChunk = Math.max(1, Math.floor(zero.byteLength / rowBytes));
+            let y = 0;
+            while (y < h) {
+                const writeRows = Math.min(rowsPerChunk, h - y);
+                this.device.queue.writeTexture(
+                    { texture: tex, origin: { x: 0, y, z: 0 } },
+                    zero,
+                    { bytesPerRow: rowBytes, rowsPerImage: writeRows },
+                    { width: w, height: writeRows, depthOrArrayLayers: 1 }
+                );
+                y += writeRows;
+            }
+        }
     }
 
     // GPU 연결 및 설정
     // adapter -> device -> context -> format 설정
     async setupDevice() {
-
-        //adapter: wrapper around (physical) GPU.
-        //Describes features and limits
+        if (this.device) return; // 이미 초기화됨
         this.adapter = <GPUAdapter> await navigator.gpu?.requestAdapter();
-        //device: wrapper around GPU functionality
-        //Function calls are made through the device
         this.device = <GPUDevice> await this.adapter?.requestDevice();
-        //context: similar to vulkan instance (or OpenGL context)
         this.context = <GPUCanvasContext> this.canvas.getContext("webgpu");
         this.format = "bgra8unorm";
-        this.context.configure({
-            device: this.device,
-            format: this.format,
-            alphaMode: "opaque"
-        });
-
+        this.context.configure({ device: this.device, format: this.format, alphaMode: "opaque" });
     }
 
     // GPU 파이프라인과 리소스 구성
@@ -265,7 +342,7 @@ export class Renderer {
         sceneData[7] = scene.cones.length; // Cone 개수 추가
         sceneData[8] = scene.toruses.length; // Torus 개수 추가
         sceneData[9] = scene.bezierPatches?.length || 0; // BezierPatch 개수 추가
-        console.log(`📦 Header: bezierPatches count = ${sceneData[9]}`);
+    // console.log(`📦 Header: bezierPatches count = ${sceneData[9]}`); // DEBUG disabled for perf
         sceneData[10] = 0; // padding
         sceneData[11] = 0; // padding
         sceneData[12] = 0; // padding
@@ -377,7 +454,7 @@ export class Renderer {
             }
 
             if (typeof (window as any) !== 'undefined' && (window as any).DEBUG_PLANE_BASIS) {
-                console.log(`[PlanePack:init] n=${n.map(v=>v.toFixed(3))} x0=${origX?origX.map(v=>v.toFixed(3)):'-'} y0=${origY?origY.map(v=>v.toFixed(3)):'-'} -> x=${xdir.map(v=>v.toFixed(3))} y=${ydir.map(v=>v.toFixed(3))}`);
+                // console.log(`[PlanePack:init] ...`); // disabled
             }
 
             sceneData[offset + 0] = plane.center[0];
@@ -558,7 +635,7 @@ export class Renderer {
 
             if (typeof (window as any) !== 'undefined' && (window as any).DEBUG_TORUS_BASIS) {
                 const dotXY = (xdir[0]*ydir[0]+xdir[1]*ydir[1]+xdir[2]*ydir[2]).toFixed(4);
-                console.log(`[TorusPack:init] center=${torus.center.map(v=>v.toFixed(3))} X0=${origX?origX.map(v=>v.toFixed(3)):'-'} Y0=${origY?origY.map(v=>v.toFixed(3)):'-'} -> X=${xdir.map(v=>v.toFixed(3))} Y=${ydir.map(v=>v.toFixed(3))} dotXY=${dotXY} R=${torus.majorRadius.toFixed(3)} r=${torus.minorRadius.toFixed(3)} angleDeg=${(torus.angle*180/Math.PI).toFixed(1)}`);
+                // console.log(`[TorusPack:init] ...`); // disabled
             }
             sceneData[offset + 0] = torus.center[0];
             sceneData[offset + 1] = torus.center[1];
@@ -585,11 +662,10 @@ export class Renderer {
 
         // Bézier patches 데이터 패킹
         if (scene.bezierPatches) {
-            console.log(`🔵 Packing ${scene.bezierPatches.length} Bezier patches`);
-            console.log(`🎯 Bezier patch starts at absolute offset: ${offset}`);
+            // console.log(`🔵 Packing ${scene.bezierPatches.length} Bezier patches`);
+            // console.log(`🎯 Bezier patch starts at absolute offset: ${offset}`);
             for (const patch of scene.bezierPatches) {
-                console.log(`📦 Bezier patch: color=${patch.color}, material=${patch.material.type}`);
-                console.log(`📦 Bounding box: min=${patch.boundingBox.min}, max=${patch.boundingBox.max}`);
+                // console.log(`📦 Bezier patch info ...`);
                 const patchStartOffset = offset;
                 // Pack 16 control points (48 floats)
                 // Convert from 4x4 matrix to flat array of 16 points
@@ -603,7 +679,7 @@ export class Renderer {
                     }
                 }
                 offset += 48; // 16 control points * 3 floats each
-                console.log(`📦 After control points, offset = ${offset}`);
+                // console.log(`📦 After control points, offset = ${offset}`);
                 
                 // Pack bounding box (min and max corners - 8 floats with padding)
                 sceneData[offset + 0] = patch.boundingBox.min[0];
@@ -615,36 +691,37 @@ export class Renderer {
                 sceneData[offset + 6] = patch.boundingBox.max[2];
                 sceneData[offset + 7] = 0; // padding
                 offset += 8;
-                console.log(`📦 After bounding box, offset = ${offset}`);
+                // console.log(`📦 After bounding box, offset = ${offset}`);
                 
                 // Pack color and material (4 floats)
                 sceneData[offset + 0] = patch.color[0];
                 sceneData[offset + 1] = patch.color[1];
                 sceneData[offset + 2] = patch.color[2];
                 sceneData[offset + 3] = patch.material.type;
-                console.log(`🎨 Packed color at absolute offset ${offset}: [${sceneData[offset + 0]}, ${sceneData[offset + 1]}, ${sceneData[offset + 2]}], material: ${sceneData[offset + 3]}`);
-                console.log(`📍 Patch start: ${patchStartOffset}, Control points: ${patchStartOffset}-${patchStartOffset + 47}, Bounding box: ${patchStartOffset + 48}-${patchStartOffset + 55}, Color: ${patchStartOffset + 56}-${patchStartOffset + 59}`);
+                // console.log(`🎨 Packed color ...`);
                 offset += 4;
             }
         }
 
-        // Create a storage buffer for the scene data
-        this.sceneBuffer = this.device.createBuffer({
-            size: Math.max(sceneData.byteLength, 1024 * 1024), // 최소 1MB로 설정
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-        });
+        // Create or reuse storage buffer for the scene data (initial build path) with tracking
+        if (!this.sceneBuffer || this.sceneBufferDevice !== this.device || this.sceneBufferCapacity < sceneData.byteLength) {
+            if (this.sceneBuffer) { try { this.sceneBuffer.destroy(); } catch {} }
+            const newCap = Math.max(sceneData.byteLength, 1024 * 1024);
+            this.sceneBuffer = this.device.createBuffer({
+                size: newCap,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+            this.sceneBufferDevice = this.device;
+            this.sceneBufferCapacity = newCap;
+        }
         
         // Debug: Check buffer content just before writing to GPU
         if (scene.bezierPatches.length > 0) {
             const bezierPatchOffset = offset - 4; // Last packed offset (color start)
-            console.log(`🔍 Final buffer check before GPU upload:`);
-            console.log(`  Color R at position ${bezierPatchOffset}: ${sceneData[bezierPatchOffset]}`);
-            console.log(`  Color G at position ${bezierPatchOffset + 1}: ${sceneData[bezierPatchOffset + 1]}`);
-            console.log(`  Color B at position ${bezierPatchOffset + 2}: ${sceneData[bezierPatchOffset + 2]}`);
-            console.log(`  Material at position ${bezierPatchOffset + 3}: ${sceneData[bezierPatchOffset + 3]}`);
+            // console.log(`🔍 Final buffer check before GPU upload (disabled)`);
         }
         
-        this.device.queue.writeBuffer(this.sceneBuffer, 0, sceneData);
+    this.device.queue.writeBuffer(this.sceneBuffer, 0, sceneData);
 
         // --- BVH Construction ---
         if (this.enableBVH) {
@@ -661,7 +738,7 @@ export class Renderer {
         // samples_per_pixel: 안티앨리어싱용 샘플 수 (예: 100)
         // seed: 랜덤 생성기 시드값 (매 프레임 변경)
         this.uniform_buffer = this.device.createBuffer({
-            size: 8,
+            size: 16, // samples_per_pixel, seed, frame_count, reset_flag (4*4bytes)
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 
         });
         // UNIFORM: 작은 데이터(~64KB), 빠른 접근, 모든 스레드가 동일한 값
@@ -716,43 +793,21 @@ export class Renderer {
                     binding: 6, // BVH primitive info (type + geometry index)
                     visibility: GPUShaderStage.COMPUTE,
                     buffer: { type: "read-only-storage" }
+                },
+                { // previous accumulation (sampled)
+                    binding: 7,
+                    visibility: GPUShaderStage.COMPUTE,
+                    texture: { sampleType: "unfilterable-float" }
+                },
+                { // next accumulation (write-only storage texture)
+                    binding: 8,
+                    visibility: GPUShaderStage.COMPUTE,
+                    storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "2d" }
                 }
             ]
         });
     
-        this.ray_tracing_bind_group = this.device.createBindGroup({
-            layout: this.ray_tracing_bind_group_layout,
-            entries: [
-                {
-                    binding: 0,
-                    resource: this.color_buffer_view
-                },
-                {
-                    binding: 1,
-                    resource: { buffer: this.sceneBuffer }
-                },
-                {
-                    binding: 2,
-                    resource: { buffer: this.uniform_buffer }
-                },
-                {
-                    binding: 3,
-                    resource: { buffer: this.camera_buffer }
-                },
-                {
-                    binding: 4,
-                    resource: { buffer: this.bvhBuffer || this.createDummyBuffer() }
-                },
-                {
-                    binding: 5,
-                    resource: { buffer: this.primitiveIndexBuffer || this.createDummyBuffer() }
-                },
-                {
-                    binding: 6,
-                    resource: { buffer: this.primitiveInfoBuffer || this.createDummyBuffer() }
-                }
-            ]
-        });
+    this.rebuildRayTracingBindGroup();
         
         const ray_tracing_pipeline_layout = this.device.createPipelineLayout({
             bindGroupLayouts: [this.ray_tracing_bind_group_layout]
@@ -857,6 +912,16 @@ export class Renderer {
             maxAnisotropy: 1
         };
         this.sampler = this.device.createSampler(samplerDescriptor);
+
+        // Accumulation textures (ping-pong)
+        for (let i = 0; i < 2; i++) {
+            this.accum_textures[i] = this.device.createTexture({
+                size: { width: this.canvas.width, height: this.canvas.height },
+                format: 'rgba16float',
+                usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+            });
+            this.accum_views[i] = this.accum_textures[i]!.createView();
+        }
     }
 
     // Frustum Culling을 적용하여 필터링된 Scene 생성
@@ -1027,7 +1092,7 @@ export class Renderer {
 
         // 디버그 정보 출력 (매 프레임마다는 너무 많으니 가끔씩만)
         if (Math.random() < 0.01) { // 1% 확률로 출력
-            console.log(`Frustum Culling: ${culledObjects}/${totalObjects} objects culled (${((culledObjects/totalObjects)*100).toFixed(1)}%)`);
+            // console.log(`Frustum Culling: ... disabled`);
         }
 
         return culledScene;
@@ -1163,7 +1228,7 @@ export class Renderer {
                 ydir = [-ydir[0], -ydir[1], -ydir[2]] as vec3;
             }
             if (typeof (window as any) !== 'undefined' && (window as any).DEBUG_PLANE_BASIS) {
-                console.log(`[PlanePack:update] n=${n.map(v=>v.toFixed(3))} x0=${origX?origX.map(v=>v.toFixed(3)):'-'} y0=${origY?origY.map(v=>v.toFixed(3)):'-'} -> x=${xdir.map(v=>v.toFixed(3))} y=${ydir.map(v=>v.toFixed(3))}`);
+                // console.log(`[PlanePack:update] ...`);
             }
             sceneData[offset + 0] = plane.center[0];
             sceneData[offset + 1] = plane.center[1];
@@ -1377,50 +1442,17 @@ export class Renderer {
             }
         }
 
-        // 기존 버퍼가 충분히 크면 재사용, 아니면 새로 생성
-        if (!this.sceneBuffer || this.sceneBuffer.size < sceneData.byteLength) {
-            if (this.sceneBuffer) {
-                this.sceneBuffer.destroy();
-            }
+        // 기존 버퍼 재사용 (디바이스/용량 확인)
+        if (!this.sceneBuffer || this.sceneBufferDevice !== this.device || this.sceneBufferCapacity < sceneData.byteLength) {
+            if (this.sceneBuffer) { try { this.sceneBuffer.destroy(); } catch {} }
+            const newCap = Math.max(sceneData.byteLength, 1024 * 1024);
             this.sceneBuffer = this.device.createBuffer({
-                size: Math.max(sceneData.byteLength, 1024 * 1024), // 최소 1MB로 설정
+                size: newCap,
                 usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
             });
-            
-            // BindGroup 업데이트
-            this.ray_tracing_bind_group = this.device.createBindGroup({
-                layout: this.ray_tracing_bind_group_layout,
-                entries: [
-                    {
-                        binding: 0,
-                        resource: this.color_buffer_view
-                    },
-                    {
-                        binding: 1,
-                        resource: { buffer: this.sceneBuffer }
-                    },
-                    {
-                        binding: 2,
-                        resource: { buffer: this.uniform_buffer }
-                    },
-                    {
-                        binding: 3,
-                        resource: { buffer: this.camera_buffer }
-                    },
-                    {
-                        binding: 4,
-                        resource: { buffer: this.bvhBuffer || this.createDummyBuffer() }
-                    },
-                    {
-                        binding: 5,
-                        resource: { buffer: this.primitiveIndexBuffer || this.createDummyBuffer() }
-                    },
-                    {
-                        binding: 6,
-                        resource: { buffer: this.primitiveInfoBuffer || this.createDummyBuffer() }
-                    }
-                ]
-            });
+            this.sceneBufferDevice = this.device;
+            this.sceneBufferCapacity = newCap;
+            this.rebuildRayTracingBindGroup();
         }
         
         // 데이터 업데이트
@@ -1430,48 +1462,32 @@ export class Renderer {
         if (this.enableBVH) {
             this.buildBVH(scene);
             
-            // BVH가 업데이트되었으므로 BindGroup 재생성
-            this.ray_tracing_bind_group = this.device.createBindGroup({
-                layout: this.ray_tracing_bind_group_layout,
-                entries: [
-                    {
-                        binding: 0,
-                        resource: this.color_buffer_view
-                    },
-                    {
-                        binding: 1,
-                        resource: { buffer: this.sceneBuffer }
-                    },
-                    {
-                        binding: 2,
-                        resource: { buffer: this.uniform_buffer }
-                    },
-                    {
-                        binding: 3,
-                        resource: { buffer: this.camera_buffer }
-                    },
-                    {
-                        binding: 4,
-                        resource: { buffer: this.bvhBuffer }
-                    },
-                    {
-                        binding: 5,
-                        resource: { buffer: this.primitiveIndexBuffer }
-                    },
-                    {
-                        binding: 6,
-                        resource: { buffer: this.primitiveInfoBuffer }
-                    }
-                ]
-            });
+            // BVH 갱신에 따라 BindGroup 재생성
+            this.rebuildRayTracingBindGroup();
         }
     }
 
     render = (look_from: vec3, look_at: vec3, v_up: vec3, v_fov: number, aspect_ratio: number) => {
+        // --- 카메라 이동 감지 (간단: 이전 origin/target 비교) ---
+        const camMoved = (() => {
+            if (!this._lastCamFrom || !this._lastCamAt) return true;
+            const df = Math.hypot(look_from[0]-this._lastCamFrom[0], look_from[1]-this._lastCamFrom[1], look_from[2]-this._lastCamFrom[2]);
+            const da = Math.hypot(look_at[0]-this._lastCamAt[0], look_at[1]-this._lastCamAt[1], look_at[2]-this._lastCamAt[2]);
+            return (df+da) > 1e-4;
+        })();
+        this._lastCamFrom = [...look_from];
+        this._lastCamAt = [...look_at];
 
-        // --- Frustum Culling ---
-        const culledScene = this.performFrustumCulling(look_from, look_at, v_up, v_fov, aspect_ratio);
-        this.updateSceneBuffer(culledScene);
+        // --- Frustum Culling & Scene Buffer Update (카메라가 움직이지 않으면 스킵) ---
+        if (camMoved) {
+            const culledScene = this.performFrustumCulling(look_from, look_at, v_up, v_fov, aspect_ratio);
+            this.updateSceneBuffer(culledScene);
+            this.frameCounter = 0; // reset accumulation (no previous frames)
+            this.cameraChangedThisFrame = true;
+            this.lastAccumPrevIndex = -1; // force bindgroup rebuild
+        } else {
+            this.cameraChangedThisFrame = false;
+        }
 
         // --- Camera Calculation ---
         const theta = v_fov * (Math.PI / 180.0);
@@ -1479,13 +1495,13 @@ export class Renderer {
         const viewport_height = 2.0 * h;
         const viewport_width = aspect_ratio * viewport_height;
 
-        const w = normalize(subtract(look_from, look_at));
-        const u = normalize(cross(v_up, w));
-        const v = cross(w, u);
+    const w = normalize(subtract(look_from, look_at));
+    const camU = normalize(cross(v_up, w));
+    const camV = cross(w, camU);
 
         const origin = look_from;
-        const horizontal = scale(u, viewport_width);
-        const vertical = scale(v, viewport_height);
+    const horizontal = scale(camU, viewport_width);
+    const vertical = scale(camV, viewport_height);
         const lower_left_corner = subtract(subtract(subtract(origin, scale(horizontal, 0.5)), scale(vertical, 0.5)), w);
 
         const cameraData = new Float32Array([
@@ -1497,15 +1513,38 @@ export class Renderer {
         this.device.queue.writeBuffer(this.camera_buffer, 0, cameraData);
 
         // --- Update Uniforms ---
-        const samples_per_pixel = 4; // 16 → 4으로 성능 개선 (다중 오브젝트용)
+        // --- Adaptive Samples Per Pixel ---
+        // 카메라가 움직이면 노이즈 억제를 위한 누적 대신 빠른 응답 위해 낮춤, 멈추면 점증
+        if (camMoved) {
+            this._accumulatedStillFrames = 0;
+        } else {
+            this._accumulatedStillFrames = Math.min(this._accumulatedStillFrames + 1, 240);
+        }
+    const samples_per_pixel = 1; // temporal accumulation: 항상 1 샘플
+    // frameCounter는 '지금까지 누적된 프레임 수(이전 프레임들)'이므로 여기서 증가시키지 않음. (Submit 후 증가)
         const seed = Math.random() * 4294967295; // Random u32
-        this.device.queue.writeBuffer(this.uniform_buffer, 0, new Uint32Array([samples_per_pixel, seed]));
+    const resetFlag = this.cameraChangedThisFrame ? 1 : 0;
+    const frameCountForGPU = this.frameCounter >>> 0; // clamp to u32
+    const uniformData = new Uint32Array([samples_per_pixel, seed, frameCountForGPU, resetFlag]);
+    this.device.queue.writeBuffer(this.uniform_buffer, 0, uniformData);
 
         const commandEncoder : GPUCommandEncoder = this.device.createCommandEncoder();
+        // 카메라 움직여도 reset_flag 로 첫 프레임에서 이전 누적 무시하므로 별도 clear 불필요
+
+        // --- Accumulation ping-pong 인덱스 결정 ---
+        const prevIndex = this.frameCounter % 2; // 이전 누적이 들어있는 텍스처
+        const nextIndex = (prevIndex + 1) % 2;    // 이번 프레임 결과를 쓸 텍스처
+        const prevView = this.accum_views[prevIndex] ?? this.color_buffer_view;
+        const nextView = this.accum_views[nextIndex] ?? this.color_buffer_view;
+        if (prevIndex !== this.lastAccumPrevIndex) {
+            this.rebuildRayTracingBindGroup(prevView, nextView);
+            this.lastAccumPrevIndex = prevIndex;
+        }
 
         const ray_trace_pass : GPUComputePassEncoder = commandEncoder.beginComputePass();
         ray_trace_pass.setPipeline(this.ray_tracing_pipeline);
-        ray_trace_pass.setBindGroup(0, this.ray_tracing_bind_group);
+    // BindGroup은 prevIndex 변경 시에만 재생성 (위에서 처리)
+    ray_trace_pass.setBindGroup(0, this.ray_tracing_bind_group);
         ray_trace_pass.dispatchWorkgroups(
             Math.ceil(this.canvas.width / 16), 
             Math.ceil(this.canvas.height / 16), 1);
@@ -1527,7 +1566,10 @@ export class Renderer {
         
         renderpass.end();
     
-        this.device.queue.submit([commandEncoder.finish()]);
+    this.device.queue.submit([commandEncoder.finish()]);
+
+    // 프레임 처리 후 누적 프레임 수 증가 (카메라가 움직였던 프레임은 0에서 첫 누적, 움직인 프레임도 포함하여 count 증가)
+    this.frameCounter++;
 
     }
 
@@ -1539,13 +1581,10 @@ export class Renderer {
 
         // BVH 노드 데이터를 GPU 버퍼로 패킹
         if (this.bvhNodes.length > 0) {
-            // 각 노드는 8 floats (minCorner(3) + leftChild(1) + maxCorner(3) + primitiveCount(1))
             const nodeData = new Float32Array(this.bvhNodes.length * 8);
-            
             for (let i = 0; i < this.bvhNodes.length; i++) {
                 const node = this.bvhNodes[i];
                 const offset = i * 8;
-                
                 nodeData[offset + 0] = node.minCorner[0];
                 nodeData[offset + 1] = node.minCorner[1];
                 nodeData[offset + 2] = node.minCorner[2];
@@ -1555,66 +1594,77 @@ export class Renderer {
                 nodeData[offset + 6] = node.maxCorner[2];
                 nodeData[offset + 7] = node.primitiveCount;
             }
-
-            // BVH 노드 버퍼 생성
-            if (this.bvhBuffer) {
-                this.bvhBuffer.destroy();
+            const needed = Math.max(nodeData.byteLength, 16);
+            if (!this.bvhBuffer || this.bvhBufferCapacity < needed) {
+                if (this.bvhBuffer) { try { this.bvhBuffer.destroy(); } catch {} }
+                const newCap = Math.ceil(needed * 1.5);
+                this.bvhBuffer = this.device.createBuffer({
+                    size: newCap,
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+                });
+                this.bvhBufferCapacity = newCap;
             }
-            this.bvhBuffer = this.device.createBuffer({
-                size: Math.max(nodeData.byteLength, 16), // 최소 16 bytes
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-            });
             this.device.queue.writeBuffer(this.bvhBuffer, 0, nodeData);
         }
 
         // Primitive 인덱스 버퍼 생성
         if (this.bvhPrimitiveIndices.length > 0) {
             const indexData = new Uint32Array(this.bvhPrimitiveIndices);
-            
-            if (this.primitiveIndexBuffer) {
-                this.primitiveIndexBuffer.destroy();
+            const needed = Math.max(indexData.byteLength, 16);
+            if (!this.primitiveIndexBuffer || this.primitiveIndexBufferCapacity < needed) {
+                if (this.primitiveIndexBuffer) { try { this.primitiveIndexBuffer.destroy(); } catch {} }
+                const newCap = Math.ceil(needed * 1.5);
+                this.primitiveIndexBuffer = this.device.createBuffer({
+                    size: newCap,
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+                });
+                this.primitiveIndexBufferCapacity = newCap;
             }
-            this.primitiveIndexBuffer = this.device.createBuffer({
-                size: Math.max(indexData.byteLength, 16), // 최소 16 bytes
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-            });
             this.device.queue.writeBuffer(this.primitiveIndexBuffer, 0, indexData);
         }
 
         // Primitive 정보 버퍼 생성 (타입 + 지오메트리 인덱스)
         if (result.primitiveInfos.length > 0) {
-            // 각 primitive info는 4 uint32 (geometryType, geometryIndex, padding1, padding2)
             const primitiveInfoData = new Uint32Array(result.primitiveInfos.length * 4);
-            
             for (let i = 0; i < result.primitiveInfos.length; i++) {
                 const info = result.primitiveInfos[i];
                 const offset = i * 4;
-                
-                primitiveInfoData[offset + 0] = info.type;      // geometryType
-                primitiveInfoData[offset + 1] = info.index;     // geometryIndex
-                primitiveInfoData[offset + 2] = 0;              // padding1
-                primitiveInfoData[offset + 3] = 0;              // padding2
+                primitiveInfoData[offset + 0] = info.type;
+                primitiveInfoData[offset + 1] = info.index;
+                primitiveInfoData[offset + 2] = 0;
+                primitiveInfoData[offset + 3] = 0;
             }
-
-            if (this.primitiveInfoBuffer) {
-                this.primitiveInfoBuffer.destroy();
+            const needed = Math.max(primitiveInfoData.byteLength, 16);
+            if (!this.primitiveInfoBuffer || this.primitiveInfoBufferCapacity < needed) {
+                if (this.primitiveInfoBuffer) { try { this.primitiveInfoBuffer.destroy(); } catch {} }
+                const newCap = Math.ceil(needed * 1.5);
+                this.primitiveInfoBuffer = this.device.createBuffer({
+                    size: newCap,
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+                });
+                this.primitiveInfoBufferCapacity = newCap;
             }
-            this.primitiveInfoBuffer = this.device.createBuffer({
-                size: Math.max(primitiveInfoData.byteLength, 16), // 최소 16 bytes
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-            });
             this.device.queue.writeBuffer(this.primitiveInfoBuffer, 0, primitiveInfoData);
         }
 
-        console.log(`BVH built: ${this.bvhNodes.length} nodes, ${this.bvhPrimitiveIndices.length} primitives`);
+    // console.log(`BVH built: ${this.bvhNodes.length} nodes, ${this.bvhPrimitiveIndices.length} primitives`); // can re-enable for stats
     }
 
-    // 더미 버퍼 생성 (BVH가 비활성화된 경우 사용)
-    createDummyBuffer(): GPUBuffer {
-        return this.device.createBuffer({
-            size: 16, // 최소 크기
-            usage: GPUBufferUsage.STORAGE,
-        });
+    private getDummyBuffer(): GPUBuffer {
+        if (!this.dummyBuffer) {
+            this.dummyBuffer = this.device.createBuffer({ size: 16, usage: GPUBufferUsage.STORAGE });
+        }
+        return this.dummyBuffer;
+    }
+
+    // BVH 플래그 토글 (디바이스/파이프라인 재생성 없이)
+    toggleBVH() {
+        this.enableBVH = !this.enableBVH;
+        if (this.enableBVH && this.currentScene) {
+            this.buildBVH(this.currentScene);
+        }
+        this.rebuildRayTracingBindGroup();
+        console.log(`BVH: ${this.enableBVH ? 'Enabled' : 'Disabled'}`);
     }
     
 }

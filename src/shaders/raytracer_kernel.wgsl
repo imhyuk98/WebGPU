@@ -6,6 +6,8 @@
 struct Settings {
     samples_per_pixel: u32,
     seed: u32,
+    frame_count: u32,
+    reset_flag: u32,
 };
 @group(0) @binding(2) var<uniform> settings: Settings;
 
@@ -25,6 +27,9 @@ struct Camera {
 @group(0) @binding(4) var<storage, read> bvh_buffer: array<f32>;
 @group(0) @binding(5) var<storage, read> primitive_index_buffer: array<u32>;
 @group(0) @binding(6) var<storage, read> primitive_info_buffer: array<BVHPrimitiveInfo>;
+// Accumulation ping-pong
+@group(0) @binding(7) var accum_prev: texture_2d<f32>;              // read previous accumulated color
+@group(0) @binding(8) var accum_next: texture_storage_2d<rgba16float, write>; // write updated accumulation
 
 // Debug variable to inspect color values
 var<private> debug_color: vec3<f32>;
@@ -586,10 +591,22 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         accumulated_color += trace(ray);
     }
 
-    let final_color = accumulated_color / f32(samples_per_pixel);
+    let new_sample = accumulated_color / f32(samples_per_pixel);
 
-    // Add gamma correction
-    let gamma_corrected_color = pow(final_color, vec3<f32>(1.0/2.2));
+    var accum_color: vec3<f32>;
+    if (settings.reset_flag == 1u || settings.frame_count == 0u) {
+        accum_color = new_sample;
+    } else {
+        let prev = textureLoad(accum_prev, vec2<i32>(global_id.xy), 0).rgb;
+        // Online mean: prevMean*(n/(n+1)) + sample/(n+1)
+        let n = f32(settings.frame_count);
+        accum_color = prev + (new_sample - prev) / (n + 1.0);
+    }
 
+    // Write updated accumulation to accum_next
+    textureStore(accum_next, global_id.xy, vec4<f32>(accum_color, 1.0));
+
+    // Gamma correction for display
+    let gamma_corrected_color = pow(accum_color, vec3<f32>(1.0/2.2));
     textureStore(screen, global_id.xy, vec4<f32>(gamma_corrected_color, 1.0));
 }

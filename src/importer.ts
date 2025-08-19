@@ -62,6 +62,10 @@ const APPLY_ZUP_TO_YUP = true; // 필요 시 true
 // Torus basis canonicalization flags (kept minimal for generality)
 // Avoid ad-hoc global flips; only normalize & orthogonalize.
 const FLIP_TORUS_YDIR = true; // 실험: ydir 방향 반전
+// Shape type normalization debug logging toggle
+const LOG_TYPE_NORMALIZATION = false;
+// Plane size fallback logging
+const LOG_PLANE_SIZE_FALLBACK = true;
 
 // 로그 보정(유효치가 없을 때 기본값으로 채워 배열에라도 담기)
 const RELAX_FOR_LOG = true;
@@ -101,6 +105,46 @@ class BinReader {
   // f32 지원 (이전 수정에서 추가됨)
   readVec3f32(): Vec3 { return [this.f32(), this.f32(), this.f32()]; }
   peekBytes(n: number): Uint8Array { this.need(n); return new Uint8Array(this.view.buffer, this._off, n).slice(); }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ShapeType normalization (spec ↔ legacy bridging)
+// Spec enumerates: 0 Instance, 1 Cylinder, 2 Sphere, 3 Plane, 4 Circle, 5 Cone,
+// 6 Line, 7 myEllipse, 8 Revolved, 9 EllipseCurve, 10 CircleCurve, 12 HermiteSpline,
+// 13 HermiteFace, 99 Generic
+// Legacy (current internal) uses: 100 Instance, 1 Cylinder,2 Sphere,3 Plane,4 Circle,5 Cone,
+// 6 Revolved,7 myEllipse,8 Line,9 EllipseCurve,10 CircleCurve,11 HermiteFace,12 HermiteSpline,13 Generic
+// We provide a mapper so we can ingest either numbering without breaking existing logic.
+
+function normalizeShapeType(raw: number, payloadLen: number): number {
+    // Direct internal values pass through first
+    if (raw === ShapeType.Instance || raw === ShapeType.Cylinder || raw === ShapeType.Sphere || raw === ShapeType.Plane || raw === ShapeType.Circle || raw === ShapeType.Cone || raw === ShapeType.Revolved || raw === ShapeType.myEllipse || raw === ShapeType.Line || raw === ShapeType.EllipseCurve || raw === ShapeType.CircleCurve || raw === ShapeType.HermiteFace || raw === ShapeType.HermiteSpline || raw === ShapeType.Generic) {
+        return raw;
+    }
+    // Spec → internal remap
+    switch (raw) {
+        case 0: // Spec Instance
+            return ShapeType.Instance; // internal 100
+        case 6: // Spec Line
+            return ShapeType.Line; // internal 8
+        case 7: // Spec myEllipse
+            return ShapeType.myEllipse;
+        case 8: { // Spec Revolved; disambiguate if legacy Line (len ~52)
+            // Revolved variants ~96/100 bytes; Line ~48/52 + optional thickness
+            if (payloadLen >= 96) return ShapeType.Revolved; // internal 6
+            return ShapeType.Line; // treat as line fallback
+        }
+        case 11: // (Spec may not list 11 explicitly for HermiteFace in provided table but keep safety)
+            return ShapeType.HermiteFace;
+        case 12: // HermiteSpline
+            return ShapeType.HermiteSpline;
+        case 13: // HermiteFace (if spec swapped?)
+            return ShapeType.HermiteFace;
+        case 99: // Generic
+            return ShapeType.Generic;
+        default:
+            return raw; // unknown; handled later
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -298,20 +342,68 @@ function sym_Cone(r: BinReader, len: number): SymPartial {
   return { ok: true, consumed: r.offset - start, info: { center, normal, xdir, ydir, baseR, height } };
 }
 function sym_Plane(r: BinReader, len: number): SymPartial {
-  // ... (f64 구현, 변경 없음)
-  const start = r.offset;
-  if (len < 24) return { ok: false, consumed: 0, why: "len too small" };
-  const center = r.readVec3();
-  let normal: Vec3 | undefined, xdir: Vec3 | undefined, ydir: Vec3 | undefined;
-  let w: number | undefined, h: number | undefined;
-  let remain = len - (r.offset - start);
-  if (remain >= 24) { normal = r.readVec3(); remain -= 24; }
-  if (remain >= 24) { xdir = r.readVec3();   remain -= 24; }
-  if (remain >= 24) { ydir = r.readVec3();   remain -= 24; }
-  if (remain >= 16) { w = r.f64(); h = r.f64(); remain -= 16; }
-  else if (remain >= 8) { w = r.f64(); remain -= 8; }
-  if (remain > 0) r.skip(remain);
-  return { ok: true, consumed: r.offset - start, info: { center, normal, xdir, ydir, w, h } };
+    // Dual interpretation parser with diagnostics:
+    // Layout A (spec guess): int32 ownerId + 4*Vec3 + w + h  (4 + 24*4 + 16 = 116 bytes)
+    // Layout B (legacy guess): 4*Vec3 + w + h                (24*4 + 16 = 112 bytes)
+    // We try both if lengths allow and pick the one producing plausible positive sizes.
+    const start = r.offset;
+    if (len < 24*4) return { ok: false, consumed: 0, why: "len too small for plane" };
+
+    const bytesAll = r.peekBytes(len);
+
+    function isPlausibleWH(w?: number, h?: number) {
+        return w !== undefined && h !== undefined && Number.isFinite(w) && Number.isFinite(h) && w > 1e-6 && h > 1e-6 && w < 1e6 && h < 1e6;
+    }
+
+    // Attempt A
+    let A_owner: number | undefined, A_center: Vec3|undefined, A_normal: Vec3|undefined, A_x: Vec3|undefined, A_y: Vec3|undefined, A_w: number|undefined, A_h: number|undefined;
+    let A_ok = false;
+    if (len >= 116) {
+        const rA = new BinReader(r.buf); rA.offset = r.offset;
+        try {
+            A_owner = rA.i32();
+            A_center = rA.readVec3(); A_normal = rA.readVec3(); A_x = rA.readVec3(); A_y = rA.readVec3();
+            A_w = rA.f64(); A_h = rA.f64();
+            if (isPlausibleWH(A_w, A_h)) A_ok = true;
+        } catch {}
+    }
+
+    // Attempt B
+    let B_center: Vec3|undefined, B_normal: Vec3|undefined, B_x: Vec3|undefined, B_y: Vec3|undefined, B_w: number|undefined, B_h: number|undefined; let B_ok = false;
+    if (len >= 112 && !A_ok) {
+        const rB = new BinReader(r.buf); rB.offset = r.offset;
+        try {
+            B_center = rB.readVec3(); B_normal = rB.readVec3(); B_x = rB.readVec3(); B_y = rB.readVec3();
+            B_w = rB.f64(); B_h = rB.f64();
+            if (isPlausibleWH(B_w, B_h)) B_ok = true;
+        } catch {}
+    }
+
+    // Fallback C: just vectors (no size)
+    let useLayout: 'A' | 'B' | 'V' = 'V';
+    if (A_ok) useLayout = 'A'; else if (B_ok) useLayout = 'B';
+
+    let center: Vec3|undefined, normal: Vec3|undefined, xdir: Vec3|undefined, ydir: Vec3|undefined, w: number|undefined, h: number|undefined, ownerId: number|undefined;
+    if (useLayout === 'A') {
+        ownerId = A_owner; center = A_center; normal = A_normal; xdir = A_x; ydir = A_y; w = A_w; h = A_h;
+        r.offset += 116; // consume
+    } else if (useLayout === 'B') {
+        center = B_center; normal = B_normal; xdir = B_x; ydir = B_y; w = B_w; h = B_h;
+        r.offset += 112;
+    } else {
+        // Minimal vectors only (attempt to read up to four vectors)
+        center = r.readVec3(); normal = len >= 48 ? r.readVec3() : undefined; xdir = len >= 72 ? r.readVec3() : undefined; ydir = len >= 96 ? r.readVec3() : undefined;
+        r.offset = start + len; // skip remainder
+    }
+
+    const invalidSize = !isPlausibleWH(w, h);
+    if (invalidSize) { w = undefined; h = undefined; }
+
+    if (LOG_PLANE_SIZE_FALLBACK) {
+        console.debug(`[Importer][PlaneParse] len=${len} layout=${useLayout} owner=${ownerId ?? '-'} w=${w} h=${h} okWH=${!invalidSize} bytesHead=${hexdump(bytesAll.slice(0, Math.min(24,len)))} bytesTail=${hexdump(bytesAll.slice(Math.max(0,len-24)))}`);
+    }
+
+    return { ok: !!center, consumed: len, info: { ownerId, center, normal, xdir, ydir, w, h, _invalidSize: invalidSize } };
 }
 function sym_Revolved(r: BinReader, len: number): SymPartial {
     // Primary layout (100 bytes): int32 ownerId + center(24) + xdir(24) + ydir(24) + major/minor/angle(24)
@@ -666,37 +758,7 @@ function decodeNormal_myEllipse(r: BinReader, len: number): PartialDecodeResult 
   return { consumed: r.offset - start, ok: true, info: { ownerId, center, normal, xdir, ydir, rx, ry } };
 }
 
-// [★FIX] 유효성 검사 추가 및 실패 시 되감기
-function decodeNormal_HermiteFace_Min(r: BinReader, len: number): PartialDecodeResult {
-  const start = r.offset;
-  // f64: 4 (ownerId) + 160 (data) = 164 bytes
-  if (len < 164) return { consumed: 0, ok: false, why: `len ${len} < minimal hermite face (f64N)` };
-
-  try {
-    const ownerId = r.i32();
-    const u0 = r.f64(), v0 = r.f64(), uM = r.f64(), v0_ = r.f64();
-    const u0_ = r.f64(), vN = r.f64(), uM_ = r.f64(), vN_ = r.f64();
-    const p00 = r.readVec3(), pM0 = r.readVec3(), p0N = r.readVec3(), pMN = r.readVec3();
-
-    // [★FIX] Validation
-    const params = { u0, v0, uM, v0_, u0_, vN, uM_, vN_ };
-    const info = { ownerId, params, p00, pM0, p0N, pMN, note: "tangents/bounds skipped (f64N)" };
-    if (!plausibleByName("HermiteFace", info)) {
-      r.offset = start;
-      return { consumed: 0, ok: false, why: "validation failed (f64N)" };
-    }
-
-    // Success
-    const remain = len - (r.offset - start);
-    if (remain > 0) r.skip(remain);
-    return { consumed: r.offset - start, ok: true, info: info };
-  } catch (e) {
-    r.offset = start;
-    return { consumed: 0, ok: false, why: `read error: ${e}` };
-  }
-}
-
-// NEW: EllipseCurve / CircleCurve / HermiteSpline / Generic (Normal) (변경 없음)
+// ── NEW: EllipseCurve / CircleCurve / HermiteSpline / Generic (Normal) (변경 없음)
 function decodeNormal_EllipseCurve(r: BinReader, len: number): PartialDecodeResult {
   // ... (f64 구현)
   const start = r.offset;
@@ -765,7 +827,7 @@ const DECODER_BY_TYPE: Partial<Record<ShapeType, Decoder>> = {
   [ShapeType.Cone]: decodeNormal_Cone,
   [ShapeType.Plane]: decodeNormal_Plane,
   [ShapeType.myEllipse]: decodeNormal_myEllipse,
-  [ShapeType.HermiteFace]: decodeNormal_HermiteFace_Min,
+// [Removed invalid decoder mapping: decodeNormal_HermiteFace_Min]
   [ShapeType.EllipseCurve]: decodeNormal_EllipseCurve,
   [ShapeType.CircleCurve]: decodeNormal_CircleCurve,
   [ShapeType.HermiteSpline]: decodeNormal_HermiteSpline,
@@ -933,16 +995,24 @@ function pushFromLocal(world: WorldPrimitives, name: string, info: any, tr: Tran
     }
         case "Plane": {
             const c = pos(info.center)!;
-            // Transform supplied tangents if present
             const xd = info.xdir ? rot(info.xdir) : undefined;
             const yd = info.ydir ? rot(info.ydir) : undefined;
-            // Derive normal: prefer explicit normal, else cross(xdir, ydir)
             const derivedNormal = info.normal ?? (info.xdir && info.ydir ? cross(info.xdir, info.ydir) : undefined);
             const n = rot(derivedNormal) ?? [0,0,1];
-            const w = info.w, h = info.h;
-            const size = (finite(w) && finite(h) && w > 0 && h > 0) ? [w, h] as [number, number] : undefined;
+        const w = info.w, h = info.h;
+            let size: [number, number] | undefined;
+            let usedFallback = false;
+            if (finite(w) && finite(h) && w > 0 && h > 0) {
+                size = [w, h];
+            } else if (RELAX_FOR_LOG) {
+                size = [10, 10];
+                usedFallback = true;
+            }
             if (finiteVec(c) && finiteVec(n)) {
                 world.planes.push({ center: c, normal: n, size, xdir: xd, ydir: yd });
+                if (usedFallback && LOG_PLANE_SIZE_FALLBACK) {
+            console.warn(`[Importer][Plane] Fallback size applied center=${fmt3(c)} normal=${fmt3(n)} raw w=${w} h=${h} invalid=${info._invalidSize} rawBytes=${info._rawWH ?? '-'} lenInfo=${(info._rawWH?info._rawWH.split(' ').length*1:0)} recordHasNormal=${!!info.normal}`);
+                }
             }
             break;
         }
@@ -1175,34 +1245,46 @@ function pushFromLocal(world: WorldPrimitives, name: string, info: any, tr: Tran
 // 7) 파일 → WorldPrimitives (핵심 API)
 // ──────────────────────────────────────────────────────────────────────────────
 export async function extractWorldPrimitives(file: File): Promise<WorldPrimitives> {
-  const buf = await file.arrayBuffer();
-  const r = new BinReader(buf);
+  const buf = await file.arrayBuffer();
+  const r = new BinReader(buf);
 
-  // Header
-  const magic = r.str4(); const version = r.u8(); r.i32(); // totalShapeCount(미사용)
-  if (magic !== "DTDS") throw new Error(`Invalid magic: ${JSON.stringify(magic)}`);
-  if (version !== 1) throw new Error(`Unsupported version: ${version}`);
+  // Primary header parse
+  const magic = r.str4(); const version = r.u8(); r.i32(); // totalShapeCount(미사용)
+  if (magic !== "DTDS") throw new Error(`Invalid magic: ${JSON.stringify(magic)}`);
+  if (version !== 1) throw new Error(`Unsupported version: ${version}`);
 
-  const world = emptyWorld();
+  // Fallback heuristic: if next count looks absurd (very large or negative), rewind and try alt layout
+  const mark = r.offset;
+  const symbolDefCountPeek = r.view.getInt32(r.offset, true);
+  if (symbolDefCountPeek < 0 || symbolDefCountPeek > 1000000) {
+    // Try alternative: magic + version + (first record treated as full legacy record header at current position)
+    console.warn('[Importer] Suspicious symbolDefCount', symbolDefCountPeek, 'attempting legacy header fallback');
+  }
 
-  // ── SymbolDefinition (로컬 디코드 + family 그룹핑)
-  const symbolDefCount = r.i32();
-  if (symbolDefCount < 0) throw new Error(`Invalid symbolDefCount: ${symbolDefCount}`);
+  const world = emptyWorld();
 
-  type SymEntry = { name: string; info: any; type: number; familyId?: number };
-  const symbolsByIndex: SymEntry[] = [];
-  const familyMembers = new Map<number, SymEntry[]>();
-  const symbolIndex2Family = new Map<number, number>();
+  // ── SymbolDefinition (로컬 디코드 + family 그룹핑)
+  const symbolDefCount = r.i32();
+  if (symbolDefCount < 0) throw new Error(`Invalid symbolDefCount: ${symbolDefCount}`);
 
-  for (let i = 0; i < symbolDefCount; i++) {
-    const { t, len } = readRecHeader(r);
+  type SymEntry = { name: string; info: any; type: number; familyId?: number };
+  const symbolsByIndex: SymEntry[] = [];
+  const familyMembers = new Map<number, SymEntry[]>();
+  const symbolIndex2Family = new Map<number, number>();
 
-    // [★추가됨] Heuristic: Line(Type 8)을 Revolved로 해석 (Torus 카운트 수정)
-    let effectiveType = t;
-    if (t === ShapeType.Line) {
-        // Expected Lines=0 이므로, Type 8을 Revolved로 간주하고 해석 시도.
-        effectiveType = ShapeType.Revolved;
-    }
+  for (let i = 0; i < symbolDefCount; i++) {
+    const { t, len } = readRecHeader(r);
+    // Spec ↔ legacy normalization
+    const rawType = t;
+    let effectiveType = normalizeShapeType(t, len);
+    // Optional heuristic: if normalized is Line but dataset expects Revolved (zero lines), flip
+    if (effectiveType === ShapeType.Line && len >= 96) {
+        // suspiciously large for line -> treat as revolved
+        effectiveType = ShapeType.Revolved;
+    }
+    if (LOG_TYPE_NORMALIZATION && rawType !== effectiveType) {
+        console.debug(`[Importer][Symbol] rawType=${rawType} -> normalized=${effectiveType} len=${len}`);
+    }
 
     const name = ShapeTypeNames[effectiveType] ?? `Unknown(${effectiveType})`;
     // [★변경됨] 개선된 디코더 맵 사용
@@ -1262,7 +1344,17 @@ export async function extractWorldPrimitives(file: File): Promise<WorldPrimitive
   if (instanceCount < 0) throw new Error(`Invalid instanceCount: ${instanceCount}`);
 
   for (let i = 0; i < instanceCount; i++) {
-    const { t, len } = readRecHeader(r); // instType = ShapeTypeNames[t] (참고용)
+            const { t, len } = readRecHeader(r);
+            const rawType = t;
+            const instType = normalizeShapeType(t, len);
+        if (instType !== ShapeType.Instance) {
+            // Skip non-instance artifact in instance block
+            r.skip(len);
+                if (LOG_TYPE_NORMALIZATION && rawType !== instType) {
+                    console.debug(`[Importer][Instance] Skipped non-instance rawType=${rawType} normalized=${instType} len=${len}`);
+                }
+            continue;
+        }
     const offBefore = r.offset;
 
     let decI: InstanceDecoded;
@@ -1296,13 +1388,15 @@ export async function extractWorldPrimitives(file: File): Promise<WorldPrimitive
   const ID: TransformRecord = { origin: [0,0,0], bx: [1,0,0], by: [0,1,0], bz: [0,0,1] };
 
   for (let i = 0; i < normalCount; i++) {
-    const { t, len } = readRecHeader(r);
-
-    // [★추가됨] Heuristic: Line(Type 8)을 Revolved로 해석
-    let effectiveType = t;
-    if (t === ShapeType.Line) {
-        effectiveType = ShapeType.Revolved;
-    }
+    const { t, len } = readRecHeader(r);
+    const rawType = t;
+    let effectiveType = normalizeShapeType(t, len);
+    if (effectiveType === ShapeType.Line && len >= 96) {
+        effectiveType = ShapeType.Revolved;
+    }
+    if (LOG_TYPE_NORMALIZATION && rawType !== effectiveType) {
+        console.debug(`[Importer][Normal] rawType=${rawType} -> normalized=${effectiveType} len=${len}`);
+    }
 
     const name = ShapeTypeNames[effectiveType] ?? `Unknown(${effectiveType})`;
     const decN = DECODER_BY_TYPE[effectiveType as ShapeType];

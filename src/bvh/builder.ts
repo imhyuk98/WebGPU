@@ -3,6 +3,18 @@ import { AABB } from "./aabb";
 import { BVHPrimitive, BVHGeometry } from "./geometry";
 import { Scene } from "../renderer";
 
+export interface BVHStats {
+    primitiveCount: number;
+    nodeCount: number;
+    leafCount: number;
+    avgLeafSize: number;
+    maxLeafSize: number;
+    rootBestCost: number;
+    rootDirectCost: number;
+    improvementRatio: number; // (direct-best)/direct (>=0)
+    autoFallback: boolean;
+}
+
 export class BVHBuilder {
     private nodes: BVHNode[] = [];
     private primitives: BVHPrimitive[] = [];
@@ -11,7 +23,7 @@ export class BVHBuilder {
 
     constructor() {}
 
-    buildBVH(scene: Scene): { nodes: BVHNode[], primitiveIndices: number[], primitiveInfos: { type: number, index: number }[] } {
+    buildBVH(scene: Scene): { nodes: BVHNode[], primitiveIndices: number[], primitiveInfos: { type: number, index: number }[], stats: BVHStats } {
         this.nodes = [];
         this.primitives = [];
         this.primitiveIndices = [];
@@ -22,15 +34,19 @@ export class BVHBuilder {
         
         // console.log(`BVH: Collected ${this.primitives.length} primitives`);
         
-        if (this.primitives.length === 0) {
-            return { nodes: [], primitiveIndices: [], primitiveInfos: [] };
+        const primCount = this.primitives.length;
+        if (primCount === 0) {
+            return { nodes: [], primitiveIndices: [], primitiveInfos: [], stats: {
+                primitiveCount: 0, nodeCount: 0, leafCount: 0, avgLeafSize: 0, maxLeafSize: 0,
+                rootBestCost: Infinity, rootDirectCost: 0, improvementRatio: 0, autoFallback: false
+            }};
         }
 
         // primitive indices 초기화
-        this.primitiveIndices = Array.from({ length: this.primitives.length }, (_, i) => i);
+        this.primitiveIndices = Array.from({ length: primCount }, (_, i) => i);
 
         // 최대 노드 수 할당 (2 * primitive 수 - 1)
-        const maxNodes = 2 * this.primitives.length - 1;
+        const maxNodes = 2 * primCount - 1;
         this.nodes = Array.from({ length: maxNodes }, () => new BVHNode());
 
         // 루트 노드에 모든 primitive 할당
@@ -38,7 +54,33 @@ export class BVHBuilder {
         this.nodesUsed = 1;
 
         // 루트 노드의 AABB 계산
-        this.updateNodeBounds(0, 0, this.primitives.length);
+        this.updateNodeBounds(0, 0, primCount);
+
+        // --- Root split quality estimation (for auto fallback) ---
+    const SMALL_THRESHOLD = 24; // less aggressive fallback to allow BVH for medium-small scenes
+    const IMPROVEMENT_THRESHOLD = 0.02; // require only 2% improvement to keep BVH
+        const rootDirectCost = primCount; // brute force cost heuristic
+        const rootSplit = this.findBestSplit(0, primCount);
+        const rootBestCost = rootSplit.cost; // Infinity means invalid / no split
+        const improvementRatio = (rootBestCost === Infinity) ? 0 : Math.max(0, (rootDirectCost - rootBestCost) / rootDirectCost);
+        const autoFallback = (primCount < SMALL_THRESHOLD) || (rootBestCost === Infinity) || (improvementRatio < IMPROVEMENT_THRESHOLD);
+
+        if (autoFallback) {
+            // Skip building full BVH; return empty nodes (renderer will brute-force when useBVH flag is off)
+            const primitiveInfosFallback = this.primitives.map(p => ({ type: p.type, index: p.index }));
+            const stats: BVHStats = {
+                primitiveCount: primCount,
+                nodeCount: 0,
+                leafCount: 0,
+                avgLeafSize: 0,
+                maxLeafSize: 0,
+                rootBestCost,
+                rootDirectCost,
+                improvementRatio,
+                autoFallback: true,
+            };
+            return { nodes: [], primitiveIndices: this.primitiveIndices, primitiveInfos: primitiveInfosFallback, stats };
+        }
 
         // 처음 몇 개 primitive의 위치 확인
         // console.log("First 5 primitives:");
@@ -48,19 +90,75 @@ export class BVHBuilder {
         // }
 
         // 재귀적으로 분할
-        this.subdivide(0, 0, this.primitives.length);
+        let leafCount = 0;
+        let leafPrimTotal = 0;
+        let maxLeaf = 0;
+        // Wrap original subdivide to collect stats
+        const subdivideWithStats = (nodeIndex: number, first: number, count: number) => {
+            const node = this.nodes[nodeIndex];
+            // termination mirrored from subdivide logic
+            if (count <= 4) {
+                node.leftChild = first;
+                node.primitiveCount = count;
+                leafCount++;
+                leafPrimTotal += count;
+                if (count > maxLeaf) maxLeaf = count;
+                return;
+            }
+            const bestSplit = this.findBestSplit(first, count);
+            const shouldForceSplit = count > 32;
+            if (bestSplit.cost === Infinity || (!shouldForceSplit && bestSplit.cost >= count * 0.8)) {
+                node.leftChild = first;
+                node.primitiveCount = count;
+                leafCount++;
+                leafPrimTotal += count;
+                if (count > maxLeaf) maxLeaf = count;
+                return;
+            }
+            const mid = this.partition(first, count, bestSplit.axis, bestSplit.pos);
+            if (mid <= first || mid >= first + count) {
+                node.leftChild = first;
+                node.primitiveCount = count;
+                leafCount++;
+                leafPrimTotal += count;
+                if (count > maxLeaf) maxLeaf = count;
+                return;
+            }
+            node.leftChild = this.nodesUsed;
+            node.primitiveCount = 0;
+            const leftChildIndex = this.nodesUsed++;
+            const rightChildIndex = this.nodesUsed++;
+            if (rightChildIndex >= this.nodes.length) {
+                node.leftChild = first;
+                node.primitiveCount = count;
+                leafCount++;
+                leafPrimTotal += count;
+                if (count > maxLeaf) maxLeaf = count;
+                this.nodesUsed = Math.min(this.nodesUsed, this.nodes.length);
+                return;
+            }
+            this.updateNodeBounds(leftChildIndex, first, mid - first);
+            this.updateNodeBounds(rightChildIndex, mid, count - (mid - first));
+            subdivideWithStats(leftChildIndex, first, mid - first);
+            subdivideWithStats(rightChildIndex, mid, count - (mid - first));
+        };
+
+        subdivideWithStats(0, 0, primCount);
 
         // Primitive 정보 배열 생성
-        const primitiveInfos = this.primitives.map(primitive => ({
-            type: primitive.type,
-            index: primitive.index
-        }));
-
-        return { 
-            nodes: this.nodes.slice(0, this.nodesUsed), 
-            primitiveIndices: this.primitiveIndices,
-            primitiveInfos: primitiveInfos
+        const primitiveInfos = this.primitives.map(primitive => ({ type: primitive.type, index: primitive.index }));
+        const stats: BVHStats = {
+            primitiveCount: primCount,
+            nodeCount: this.nodesUsed,
+            leafCount,
+            avgLeafSize: leafCount ? (leafPrimTotal / leafCount) : 0,
+            maxLeafSize: maxLeaf,
+            rootBestCost,
+            rootDirectCost,
+            improvementRatio,
+            autoFallback: false
         };
+        return { nodes: this.nodes.slice(0, this.nodesUsed), primitiveIndices: this.primitiveIndices, primitiveInfos, stats };
     }
 
     private collectPrimitives(scene: Scene): void {
@@ -162,28 +260,30 @@ export class BVHBuilder {
             return;
         }
 
-        // SAH(Surface Area Heuristic)를 사용한 최적 분할점 찾기
-        const bestSplit = this.findBestSplit(first, count);
+    // SAH(Surface Area Heuristic)를 사용한 최적 분할점 찾기 (binning)
+    const bestSplit = this.findBestSplit(first, count);
         
         // console.log(`  Best split: axis=${bestSplit.axis}, pos=${bestSplit.pos}, cost=${bestSplit.cost}`);
         
         // 큰 노드는 강제로 분할
         const shouldForceSplit = count > 32;
-        
-        if (!shouldForceSplit && bestSplit.cost >= count * 0.8) {
-            // 분할하는 것보다 그냥 두는 게 나은 경우
-            // console.log(`  No split benefit, making leaf with ${count} primitives`);
+
+        // 유효한 split 실패(Infinity) 또는 강제분할 아님 + 이득 없음 → leaf
+        if (bestSplit.cost === Infinity || (!shouldForceSplit && bestSplit.cost >= count * 0.8)) {
             node.leftChild = first;
             node.primitiveCount = count;
             return;
         }
-        
-        if (shouldForceSplit) {
-            // console.log(`  Force splitting large node with ${count} primitives`);
-        }
 
         // 분할점에 따라 primitive들을 정렬
         const mid = this.partition(first, count, bestSplit.axis, bestSplit.pos);
+
+        // 분할 실패(양쪽 중 하나가 비었거나 변동 없음) → leaf로 전환
+        if (mid <= first || mid >= first + count) {
+            node.leftChild = first;
+            node.primitiveCount = count;
+            return;
+        }
 
         // 내부 노드로 설정
         node.leftChild = this.nodesUsed;
@@ -192,6 +292,15 @@ export class BVHBuilder {
         // 자식 노드들 생성
         const leftChildIndex = this.nodesUsed++;
         const rightChildIndex = this.nodesUsed++;
+
+        // 노드 배열 초과 방지
+        if (rightChildIndex >= this.nodes.length) {
+            // 더 이상 공간 없으면 leaf로 롤백
+            node.leftChild = first;
+            node.primitiveCount = count;
+            this.nodesUsed = Math.min(this.nodesUsed, this.nodes.length); // 안전
+            return;
+        }
 
         // 자식 노드들의 경계 계산
         this.updateNodeBounds(leftChildIndex, first, mid - first);
@@ -203,60 +312,82 @@ export class BVHBuilder {
     }
 
     private findBestSplit(first: number, count: number): { axis: number, pos: number, cost: number } {
+        // Binned SAH (16 bins)
+        const BIN_COUNT = 16;
         let bestCost = Infinity;
         let bestAxis = 0;
         let bestPos = 0;
 
-        // 각 축에 대해 검사
+        // Precompute overall bounds to normalize centers
+        const globalAABB = new AABB();
+        for (let i = 0; i < count; i++) {
+            const prim = this.primitives[this.primitiveIndices[first + i]];
+            globalAABB.growAABB(prim.aabb);
+        }
+        const extent = [
+            globalAABB.max[0] - globalAABB.min[0],
+            globalAABB.max[1] - globalAABB.min[1],
+            globalAABB.max[2] - globalAABB.min[2]
+        ];
+
         for (let axis = 0; axis < 3; axis++) {
-            // 후보 분할점들을 primitive 중심점으로 설정
-            const candidates: number[] = [];
+            if (extent[axis] <= 1e-6) continue; // Degenerate extent, skip
+
+            // Bin accumulators
+            const binCounts = new Array<number>(BIN_COUNT).fill(0);
+            const binAABBs: AABB[] = Array.from({ length: BIN_COUNT }, () => new AABB());
+
+            const invExtent = 1.0 / extent[axis];
+            // Fill bins
             for (let i = 0; i < count; i++) {
-                const primitiveIndex = this.primitiveIndices[first + i];
-                const primitive = this.primitives[primitiveIndex];
-                candidates.push(primitive.center[axis]);
+                const prim = this.primitives[this.primitiveIndices[first + i]];
+                let c = prim.center[axis];
+                let t = (c - globalAABB.min[axis]) * invExtent; // 0..1
+                let b = Math.min(BIN_COUNT - 1, Math.max(0, Math.floor(t * BIN_COUNT)));
+                binCounts[b]++;
+                binAABBs[b].growAABB(prim.aabb);
             }
 
-            // 중복 제거 및 정렬
-            const uniqueCandidates = [...new Set(candidates)].sort((a, b) => a - b);
+            // Prefix scan (left) and suffix scan (right)
+            const leftCount = new Array<number>(BIN_COUNT).fill(0);
+            const rightCount = new Array<number>(BIN_COUNT).fill(0);
+            const leftAABB: AABB[] = Array.from({ length: BIN_COUNT }, () => new AABB());
+            const rightAABB: AABB[] = Array.from({ length: BIN_COUNT }, () => new AABB());
 
-            // 각 후보점에 대해 비용 계산
-            for (const pos of uniqueCandidates) {
-                let leftCount = 0;
-                let rightCount = 0;
-                const leftAABB = new AABB();
-                const rightAABB = new AABB();
+            let accumCount = 0;
+            let accumBox = new AABB();
+            for (let i = 0; i < BIN_COUNT; i++) {
+                accumCount += binCounts[i];
+                leftCount[i] = accumCount;
+                accumBox.growAABB(binAABBs[i]);
+                // copy into leftAABB[i]
+                leftAABB[i].min = [...accumBox.min] as any;
+                leftAABB[i].max = [...accumBox.max] as any;
+            }
+            accumCount = 0;
+            accumBox = new AABB();
+            for (let i = BIN_COUNT - 1; i >= 0; i--) {
+                accumCount += binCounts[i];
+                rightCount[i] = accumCount;
+                accumBox.growAABB(binAABBs[i]);
+                rightAABB[i].min = [...accumBox.min] as any;
+                rightAABB[i].max = [...accumBox.max] as any;
+            }
 
-                for (let i = 0; i < count; i++) {
-                    const primitiveIndex = this.primitiveIndices[first + i];
-                    const primitive = this.primitives[primitiveIndex];
-
-                    if (primitive.center[axis] < pos) {
-                        leftCount++;
-                        leftAABB.growAABB(primitive.aabb);
-                    } else {
-                        rightCount++;
-                        rightAABB.growAABB(primitive.aabb);
-                    }
-                }
-
-                // 한쪽이 비어있으면 건너뛰기
-                if (leftCount === 0 || rightCount === 0) continue;
-
-                // SAH 비용 계산 (정규화된 버전)
-                const leftArea = leftAABB.area();
-                const rightArea = rightAABB.area();
-                const totalArea = leftArea + rightArea;
-                
-                // 비용을 primitive 수로 정규화
-                const cost = totalArea > 0 ? 
-                    (leftCount * leftArea + rightCount * rightArea) / totalArea : 
-                    leftCount + rightCount;
-
+            // Evaluate splits between bins (i vs i+1)
+            for (let i = 0; i < BIN_COUNT - 1; i++) {
+                const lc = leftCount[i];
+                const rc = rightCount[i + 1];
+                if (lc === 0 || rc === 0) continue;
+                const la = leftAABB[i].area();
+                const ra = rightAABB[i + 1].area();
+                const cost = (lc * la + rc * ra) / Math.max(1e-9, la + ra);
                 if (cost < bestCost) {
                     bestCost = cost;
                     bestAxis = axis;
-                    bestPos = pos;
+                    // Split position: bin boundary
+                    const binStartNorm = (i + 1) / BIN_COUNT;
+                    bestPos = globalAABB.min[axis] + binStartNorm * extent[axis];
                 }
             }
         }

@@ -54,11 +54,12 @@ fn get_cylinder(index: u32) -> Cylinder {
     let start_of_cylinders = 13u + num_spheres * 8u;
     let offset = start_of_cylinders + index * 12u; // Use correct stride for cylinders
     var c: Cylinder;
-    c.p1 = vec3<f32>(scene_buffer[offset], scene_buffer[offset + 1], scene_buffer[offset + 2]);
-    c.radius = scene_buffer[offset + 3];
-    c.p2 = vec3<f32>(scene_buffer[offset + 4], scene_buffer[offset + 5], scene_buffer[offset + 6]);
-    c.color = vec3<f32>(scene_buffer[offset + 8], scene_buffer[offset + 9], scene_buffer[offset + 10]);
-    c.materialType = i32(scene_buffer[offset + 11]);
+    c.center = vec3<f32>(scene_buffer[offset + 0u], scene_buffer[offset + 1u], scene_buffer[offset + 2u]);
+    c.radius = scene_buffer[offset + 3u];
+    c.axis = vec3<f32>(scene_buffer[offset + 4u], scene_buffer[offset + 5u], scene_buffer[offset + 6u]);
+    c.halfHeight = scene_buffer[offset + 7u];
+    c.color = vec3<f32>(scene_buffer[offset + 8u], scene_buffer[offset + 9u], scene_buffer[offset + 10u]);
+    c.materialType = i32(scene_buffer[offset + 11u]);
     return c;
 }
 
@@ -204,11 +205,13 @@ fn get_cone(index: u32) -> Cone {
     
     var cone: Cone;
     cone.center = vec3<f32>(scene_buffer[offset + 0u], scene_buffer[offset + 1u], scene_buffer[offset + 2u]);
-    // offset + 3은 padding
+    // 3 padding (unused)
     cone.axis = vec3<f32>(scene_buffer[offset + 4u], scene_buffer[offset + 5u], scene_buffer[offset + 6u]);
     cone.height = scene_buffer[offset + 7u];
     cone.radius = scene_buffer[offset + 8u];
-    // offset + 9, 10, 11은 padding
+    cone.invHeight = scene_buffer[offset + 9u];
+    cone.cosAlpha = scene_buffer[offset + 10u];
+    cone.sinAlpha = scene_buffer[offset + 11u];
     cone.color = vec3<f32>(scene_buffer[offset + 12u], scene_buffer[offset + 13u], scene_buffer[offset + 14u]);
     cone.materialType = i32(scene_buffer[offset + 15u]);
     return cone;

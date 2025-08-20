@@ -8,6 +8,8 @@ struct Settings {
     seed: u32,
     frame_count: u32,
     reset_flag: u32,
+    disabledTypeMask: u32, // bit=1 => skip that geometry type
+    useBVH: u32,           // 1: traverse BVH, 0: brute force path even if buffers exist
 };
 @group(0) @binding(2) var<uniform> settings: Settings;
 
@@ -150,6 +152,10 @@ fn test_primitive_intersection(ray: Ray, primitive_index: u32) -> Hit {
     // Get primitive info (type and geometry index)
     let primitive_info = primitive_info_buffer[primitive_index];
     let geometry_type = primitive_info.geometryType;
+    // 타입 비활성 마스크 검사
+    if (((settings.disabledTypeMask >> geometry_type) & 1u) == 1u) {
+        return hit; // skip
+    }
     let geometry_index = primitive_info.geometryIndex;
     
     // Test based on geometry type
@@ -171,20 +177,13 @@ fn test_primitive_intersection(ray: Ray, primitive_index: u32) -> Hit {
             if (t > 0.0) {
                 hit.t = t;
                 let hit_point = ray.origin + ray.direction * t;
-                // Calculate cylinder normal
-                let p1 = cylinder.p1;
-                let ba = cylinder.p2 - p1;
-                let oc = hit_point - p1;
-                let baba = dot(ba, ba);
-                let y = dot(oc, ba);
-                
-                if (y < 0.01) {
-                    hit.normal = -normalize(ba);
-                } else if (y > baba - 0.01) {
-                    hit.normal = normalize(ba);
+                let A = cylinder.axis;
+                let rel = hit_point - cylinder.center;
+                let y = dot(rel, A);
+                if (abs(y) > cylinder.halfHeight - 0.0005) {
+                    hit.normal = select(-A, A, y > 0.0);
                 } else {
-                    let p = oc - ba * (y / baba);
-                    hit.normal = normalize(p);
+                    hit.normal = normalize(rel - A * y);
                 }
                 hit.color = cylinder.color;
                 hit.materialType = cylinder.materialType;
@@ -325,7 +324,7 @@ fn trace(r: Ray) -> vec3<f32> {
         closest_hit.materialType = 0; // LAMBERTIAN
 
         // Use BVH traversal if available
-        if (arrayLength(&bvh_buffer) > 0u) {
+    if (settings.useBVH == 1u && arrayLength(&bvh_buffer) > 0u) {
             closest_hit = trace_bvh(current_ray);
         } else {
             // Fallback to sequential testing for all geometry types
@@ -351,40 +350,19 @@ fn trace(r: Ray) -> vec3<f32> {
             let num_cylinders = get_num_cylinders();
             for (var i = 0u; i < num_cylinders; i = i + 1u) {
                 let cylinder = get_cylinder(i);
-                let t_cylinder = ray_cylinder_intersect(current_ray, cylinder);
-
-                if (t_cylinder > 0.0 && t_cylinder < closest_hit.t) {
-                    closest_hit.t = t_cylinder;
-                    let hit_point = current_ray.origin + current_ray.direction * t_cylinder;
-                    
-                    var normal = vec3<f32>(0.0, 0.0, 0.0);
-                    
-                    // Calculate cylinder center and axis
-                    let cylinder_center = (cylinder.p1 + cylinder.p2) * 0.5;
-                    let cylinder_axis = normalize(cylinder.p2 - cylinder.p1);
-                    let cylinder_height = length(cylinder.p2 - cylinder.p1);
-                    
-                    let local_hit = hit_point - cylinder_center;
-                    
-                    // Project hit point onto cylinder axis
-                    let axis_projection = dot(local_hit, cylinder_axis);
-                    
-                    if (abs(axis_projection) > cylinder_height * 0.5) {
-                        // Hit on cylinder caps
-                        if (axis_projection > 0.0) {
-                            normal = cylinder_axis;
-                        } else {
-                            normal = -cylinder_axis;
-                        }
+                let t_cyl = ray_cylinder_intersect(current_ray, cylinder);
+                if (t_cyl > 0.0 && t_cyl < closest_hit.t) {
+                    closest_hit.t = t_cyl;
+                    let hp = current_ray.origin + current_ray.direction * t_cyl;
+                    let rel = hp - cylinder.center;
+                    let y = dot(rel, cylinder.axis);
+                    if (abs(y) > cylinder.halfHeight - 0.0005) {
+                        closest_hit.normal = select(-cylinder.axis, cylinder.axis, y > 0.0);
                     } else {
-                        // Hit on cylinder side
-                        let radial_vec = local_hit - cylinder_axis * axis_projection;
-                        normal = normalize(radial_vec);
+                        closest_hit.normal = normalize(rel - cylinder.axis * y);
                     }
-                    
-                    closest_hit.normal = normal;
                     closest_hit.color = cylinder.color;
-                    closest_hit.materialType = cylinder.materialType; 
+                    closest_hit.materialType = cylinder.materialType;
                 }
             }
 

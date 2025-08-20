@@ -7,14 +7,14 @@ struct Sphere {
     // padding
 };
 
+// Cylinder now stores center/axis/halfHeight (stride kept 12 floats).
 struct Cylinder {
-    p1: vec3<f32>,
-    radius: f32,
-    p2: vec3<f32>,
-    // padding
-    color: vec3<f32>,
-    materialType: i32,
-    // padding
+    center: vec3<f32>,   // 0-2
+    radius: f32,         // 3
+    axis: vec3<f32>,     // 4-6 (normalized)
+    halfHeight: f32,     // 7
+    color: vec3<f32>,    // 8-10
+    materialType: i32,   // 11
 };
 
 struct Box {
@@ -106,17 +106,19 @@ struct BezierPatch {
     materialType: i32,
 }
 
+// Cone with precomputed derived values to avoid per-ray recomputation.
+// Layout kept at 16 floats (same stride) by reusing former padding slots.
 struct Cone {
-    center: vec3<f32>,      // 원뿔의 꼭짓점
-    padding1: f32,
-    axis: vec3<f32>,        // 원뿔의 축 방향 (정규화된 벡터)
-    height: f32,            // 원뿔의 높이
-    radius: f32,            // 원뿔 밑면의 반지름
-    padding2: f32,          // 4-byte alignment padding
-    padding3: f32,          // 4-byte alignment padding
-    padding4: f32,          // 4-byte alignment padding
-    color: vec3<f32>,       // 색상
-    materialType: i32,      // 재질 타입
+    center: vec3<f32>,      // 0-2   원뿔 기준 중심 (중간 높이)
+    padding1: f32,          // 3     (unused)
+    axis: vec3<f32>,        // 4-6   정규화된 축 방향 (apex -> base)
+    height: f32,            // 7     높이
+    radius: f32,            // 8     밑면 반지름
+    invHeight: f32,         // 9     1/height
+    cosAlpha: f32,          // 10    반쪽 각의 cos
+    sinAlpha: f32,          // 11    반쪽 각의 sin
+    color: vec3<f32>,       // 12-14 색상
+    materialType: i32,      // 15    재질 타입
 }
 
 struct Ray {

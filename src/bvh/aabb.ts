@@ -48,4 +48,8 @@ export class AABB {
                this.min[1] <= this.max[1] && 
                this.min[2] <= this.max[2];
     }
+
+    clone(): AABB {
+        return new AABB(this.min, this.max);
+    }
 }

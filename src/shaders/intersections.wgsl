@@ -65,74 +65,46 @@ fn ray_sphere_intersect(ray: Ray, sphere: Sphere) -> f32 {
 
 // Ray-Cylinder intersection with t range clamping
 fn ray_cylinder_intersect(ray: Ray, c: Cylinder) -> f32 {
-    var closest_t = -1.0;
-
-    let ro = ray.origin;
+    var closest = -1.0;
+    let A = c.axis; // normalized
+    let h = c.halfHeight;
+    let ro = ray.origin - c.center;
     let rd = ray.direction;
-    let ca = c.p2 - c.p1;
-    let oc = ro - c.p1;
-    let caca = dot(ca, ca);
-    let card = dot(ca, rd);
-    let caoc = dot(ca, oc);
-    let a = caca - card * card;
-    let b = caca * dot(oc, rd) - caoc * card;
-    let c_ = caca * dot(oc, oc) - caoc * caoc - c.radius * c.radius * caca;
-    let h = b * b - a * c_;
-
-    // 🔵 기존 측면 교차 검사 (그대로 유지)
-    if (h >= 0.0) {
-        let sqrt_h = sqrt(h);
-        // First root
-        let t1 = (-b - sqrt_h) / a;
-        let y1 = caoc + t1 * card;
-        if (y1 > 0.0 && y1 < caca && t1 >= ray.t_min && t1 <= ray.t_max) {
-            closest_t = t1;
+    let roA = dot(ro, A);
+    let rdA = dot(rd, A);
+    // Projected components perpendicular to axis
+    let w = ro - roA * A;
+    let v = rd - rdA * A;
+    let a = dot(v,v);
+    let b = 2.0 * dot(w,v);
+    let cterm = dot(w,w) - c.radius * c.radius;
+    let disc = b*b - 4.0*a*cterm;
+    if (disc >= 0.0 && a != 0.0) {
+        let sdisc = sqrt(disc);
+        let inv2a = 0.5 / a;
+        let t1 = (-b - sdisc) * inv2a;
+        let y1 = roA + t1 * rdA;
+        if (t1 >= ray.t_min && t1 <= ray.t_max && abs(y1) <= h) { closest = t1; }
+        let t2 = (-b + sdisc) * inv2a;
+        let y2 = roA + t2 * rdA;
+        if (t2 >= ray.t_min && t2 <= ray.t_max && abs(y2) <= h && (closest < 0.0 || t2 < closest)) { closest = t2; }
+    }
+    // Caps
+    if (abs(rdA) > 1e-4) {
+        let t_cap_top = ( h - roA) / rdA; // y=+h plane
+        if (t_cap_top >= ray.t_min && t_cap_top <= ray.t_max && (closest < 0.0 || t_cap_top < closest)) {
+            let p = ro + rd * t_cap_top;
+            let radial = p - A * (roA + rdA * t_cap_top);
+            if (dot(radial, radial) <= c.radius * c.radius) { closest = t_cap_top; }
         }
-
-        // Second root
-        let t2 = (-b + sqrt_h) / a;
-        let y2 = caoc + t2 * card;
-        if (y2 > 0.0 && y2 < caca && t2 >= ray.t_min && t2 <= ray.t_max) {
-            if (closest_t < 0.0 || t2 < closest_t) {
-                closest_t = t2;
-            }
+        let t_cap_bot = (-h - roA) / rdA; // y=-h plane
+        if (t_cap_bot >= ray.t_min && t_cap_bot <= ray.t_max && (closest < 0.0 || t_cap_bot < closest)) {
+            let p = ro + rd * t_cap_bot;
+            let radial = p - A * (roA + rdA * t_cap_bot);
+            if (dot(radial, radial) <= c.radius * c.radius) { closest = t_cap_bot; }
         }
     }
-
-    // 🔴 뚜껑 검사 추가 (기존 로직 이후에)
-    let cylinder_axis = normalize(ca);
-    let axis_dot_ray = dot(cylinder_axis, rd);
-    
-    // 광선이 실린더 축과 평행하지 않은 경우에만 뚜껑 검사
-    if (abs(axis_dot_ray) > 0.0001) {
-        // 아래쪽 뚜껑 (p1) 검사
-        let t_bottom = dot(c.p1 - ro, cylinder_axis) / axis_dot_ray;
-        if (t_bottom >= ray.t_min && t_bottom <= ray.t_max) {
-            let hit_point = ro + rd * t_bottom;
-            let to_hit = hit_point - c.p1;
-            let dist_sq = dot(to_hit, to_hit) - pow(dot(to_hit, cylinder_axis), 2.0);
-            if (dist_sq <= c.radius * c.radius) {
-                if (closest_t < 0.0 || t_bottom < closest_t) {
-                    closest_t = t_bottom;
-                }
-            }
-        }
-        
-        // 위쪽 뚜껑 (p2) 검사
-        let t_top = dot(c.p2 - ro, cylinder_axis) / axis_dot_ray;
-        if (t_top >= ray.t_min && t_top <= ray.t_max) {
-            let hit_point = ro + rd * t_top;
-            let to_hit = hit_point - c.p2;
-            let dist_sq = dot(to_hit, to_hit) - pow(dot(to_hit, cylinder_axis), 2.0);
-            if (dist_sq <= c.radius * c.radius) {
-                if (closest_t < 0.0 || t_top < closest_t) {
-                    closest_t = t_top;
-                }
-            }
-        }
-    }
-
-    return closest_t;
+    return closest;
 }
 
 // 직육면체-광선 교차 검사
@@ -506,7 +478,23 @@ fn is_point_in_torus_angle_range(point: vec3<f32>, torus: Torus) -> bool {
 }
 
 // Ray-Torus intersection using sphere tracing (SDF-based ray marching)
+// Fast torus coarse culling: bounding sphere test before expensive SDF marching.
+fn ray_torus_fast_cull(ray: Ray, torus: Torus) -> bool {
+    let R = torus.majorRadius + torus.minorRadius; // outer radius bound
+    let rel = torus.center - ray.origin;
+    let dist2 = dot(rel, rel);
+    // Project onto ray
+    let tca = dot(rel, ray.direction);
+    // If center is behind and origin outside sphere, reject
+    if (tca < 0.0 && dist2 > R*R) { return false; }
+    let d2 = dist2 - tca * tca;
+    if (d2 > R*R) { return false; }
+    return true;
+}
+
 fn ray_torus_intersect(ray: Ray, torus: Torus) -> f32 {
+    // Early coarse rejection
+    if (!ray_torus_fast_cull(ray, torus)) { return -1.0; }
     let max_steps = 128;
     let min_distance = 0.001;
     var t = ray.t_min;
@@ -601,80 +589,51 @@ fn cone_sdf(point: vec3<f32>, cone: Cone) -> f32 {
 
 // Ray-Cone intersection using analytical method (quadratic equation)
 fn ray_cone_intersect(ray: Ray, cone: Cone) -> f32 {
-    // center를 height의 중간점으로 사용
-    // 실제 꼭짓점(apex)은 center에서 height/2만큼 아래쪽
+    // Apex는 center에서 height/2 만큼 축 반대 방향
     let apex = cone.center - cone.axis * (cone.height * 0.5);
-    
-    // 원뿔의 꼭짓점을 원점으로 하는 좌표계로 변환
-    let oc = ray.origin - apex;  // 광선 원점을 원뿔 기준으로 변환
-    let d = ray.direction;       // 광선 방향
-    let v = cone.axis;           // 원뿔 축 방향
-    
-    // 원뿔 각도의 코사인 제곱값 계산 (cos²α = h²/(h²+r²))
-    let h = cone.height;
-    let r = cone.radius;
-    let cos_alpha_sq = (h * h) / (h * h + r * r);
-    
-    // 2차 방정식의 계수들 계산
+    let d = ray.direction;
+    let v = cone.axis;
+    let oc = ray.origin - apex;
+
+    // 미리 계산된 cosAlpha, sinAlpha 사용
+    let cos_a = cone.cosAlpha;
+    let cos_a_sq = cos_a * cos_a;
+
     let dv = dot(d, v);
     let ocv = dot(oc, v);
-    
-    let a = dv * dv - cos_alpha_sq;
-    let b = 2.0 * (dv * ocv - dot(d, oc) * cos_alpha_sq);
-    let c = ocv * ocv - dot(oc, oc) * cos_alpha_sq;
-    
-    let discriminant = b * b - 4.0 * a * c;
-    
-    if (discriminant < 0.0) {
-        return -1.0; // 교차점 없음
-    }
-    
-    let sqrt_discriminant = sqrt(discriminant);
+    let a = dv * dv - cos_a_sq;
+    let b = 2.0 * (dv * ocv - dot(d, oc) * cos_a_sq);
+    let c = ocv * ocv - dot(oc, oc) * cos_a_sq;
+
+    let disc = b * b - 4.0 * a * c;
+    if (disc < 0.0) { return -1.0; }
+    let sdisc = sqrt(disc);
     var closest_t = -1.0;
-    
-    // 두 교차점 확인
-    let t1 = (-b - sqrt_discriminant) / (2.0 * a);
-    let t2 = (-b + sqrt_discriminant) / (2.0 * a);
-    
-    // 첫 번째 교차점 확인
+    let h = cone.height;
+    // 후보 루트들
+    let t1 = (-b - sdisc) / (2.0 * a);
+    let t2 = (-b + sdisc) / (2.0 * a);
     if (t1 >= ray.t_min && t1 <= ray.t_max) {
-        let hit_point = ray.origin + d * t1;
-        let hit_height = dot(hit_point - apex, v);
-        
-        // 원뿔의 높이 범위 내에 있는지 확인
-        if (hit_height >= 0.0 && hit_height <= h) {
-            closest_t = t1;
-        }
+        let hit_height = dot((ray.origin + d * t1) - apex, v);
+        if (hit_height >= 0.0 && hit_height <= h) { closest_t = t1; }
     }
-    
-    // 두 번째 교차점 확인 (더 가까운 경우에만)
     if (t2 >= ray.t_min && t2 <= ray.t_max && (closest_t < 0.0 || t2 < closest_t)) {
-        let hit_point = ray.origin + d * t2;
-        let hit_height = dot(hit_point - apex, v);
-        
-        if (hit_height >= 0.0 && hit_height <= h) {
-            closest_t = t2;
-        }
+        let hit_height = dot((ray.origin + d * t2) - apex, v);
+        if (hit_height >= 0.0 && hit_height <= h) { closest_t = t2; }
     }
-    
-    // 밑면과의 교차 검사 (apex에서 height만큼 떨어진 곳)
-    let base_normal = v;
+
+    // 밑면 원판 교차 (base at apex + v*h)
     let base_center = apex + v * h;
-    let base_denom = dot(d, base_normal);
-    
-    if (abs(base_denom) > 0.001) {
-        let t_base = dot(base_center - ray.origin, base_normal) / base_denom;
-        
+    let denom = dot(d, v);
+    if (abs(denom) > 0.001) {
+        let t_base = dot(base_center - ray.origin, v) / denom;
         if (t_base >= ray.t_min && t_base <= ray.t_max && (closest_t < 0.0 || t_base < closest_t)) {
-            let hit_point = ray.origin + d * t_base;
-            let distance_from_center = length(hit_point - base_center);
-            
-            if (distance_from_center <= r) {
-                closest_t = t_base;
-            }
+            let hp = ray.origin + d * t_base;
+            let radial = hp - base_center;
+            let dist = length(radial - v * dot(radial, v));
+            if (dist <= cone.radius) { closest_t = t_base; }
         }
     }
-    
     return closest_t;
 }
 
@@ -966,6 +925,9 @@ fn newton_refine(bp: BezierPatchData, ray: RayData,
 
 // 베지어 패치 인터섹션 함수 - UV 파라미터도 반환
 fn intersect_bezier_patch_with_uv(ray: Ray, bezierPatch: BezierPatch, t_min: f32, t_max: f32) -> vec4<f32> {
+    // Coarse AABB reject using patch's stored bounds before subdivision cost
+    let entry = ray_aabb_intersect(ray, bezierPatch.minCorner, bezierPatch.maxCorner);
+    if (entry < 0.0) { return vec4<f32>(-1.0, 0.0, 0.0, 0.0); }
     let optix_patch = convert_to_optix_format(bezierPatch);
     var optix_ray = convert_ray_format(ray);
     optix_ray.t_min = t_min;

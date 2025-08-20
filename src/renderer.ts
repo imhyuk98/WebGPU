@@ -12,7 +12,7 @@ import {
     getBoundingSphereForCylinder, getBoundingSphereForTorus,
     BezierPatch, ControlPointMatrix
 } from "./utils";
-import { BVHBuilder } from "./bvh/builder";
+import { BVHBuilder, BVHStats } from "./bvh/builder";
 import { BVHNode } from "./bvh/node";
 import { BVHPrimitive } from "./bvh/geometry";
 
@@ -195,9 +195,30 @@ export class Renderer {
     bvhBuffer: GPUBuffer; // BVH 노드 버퍼
     primitiveIndexBuffer: GPUBuffer; // Primitive 인덱스 버퍼
     primitiveInfoBuffer: GPUBuffer; // Primitive 타입 정보 버퍼
+    private lastBVHStats: BVHStats | null = null;
+    private useBVHThisFrame: boolean = true; // auto fallback 결과 반영
     private _lastCamFrom: vec3 | null = null;
     private _lastCamAt: vec3 | null = null;
     private _accumulatedStillFrames: number = 0;
+    private lastSceneHash: number = 0; // 이전 프레임의 scene 데이터 해시
+    private sceneChangedThisFrame: boolean = false; // Scene 변경 여부
+    // Adaptive sampling configuration
+    private adaptiveSPPEnabled: boolean = true;
+    // Smoother adaptive SPP ramp: small increments to reduce sudden frame time jumps.
+    private adaptiveSchedule: { still: number, spp: number }[] = [
+        { still: 0,   spp: 1 },
+        { still: 20,  spp: 2 },
+        { still: 50,  spp: 3 },
+        { still: 90,  spp: 4 },
+        { still: 140, spp: 5 },
+        { still: 200, spp: 6 },
+        { still: 260, spp: 7 },
+        { still: 330, spp: 8 },
+    ];
+    private minAdaptiveSPP: number = 1;
+    private maxAdaptiveSPP: number = 8;
+    private lastSPPUsed: number = 1;
+    private sppHysteresisDownFactor: number = 0.5; // when motion resumes, drop to at least 50% previous
 
     // canvas 연결
     constructor(canvas: HTMLCanvasElement){
@@ -245,6 +266,21 @@ export class Renderer {
                 { binding: 8, resource: _next }
             ]
         });
+    }
+
+    private computeAdaptiveSPP(): number {
+        if (!this.adaptiveSPPEnabled) return this.minAdaptiveSPP;
+        const still = this._accumulatedStillFrames;
+        let chosen = this.minAdaptiveSPP;
+        for (let i = 0; i < this.adaptiveSchedule.length; i++) {
+            const step = this.adaptiveSchedule[i];
+            if (still >= step.still) chosen = step.spp; else break;
+        }
+        if (chosen < this.minAdaptiveSPP) chosen = this.minAdaptiveSPP;
+        if (chosen > this.maxAdaptiveSPP) chosen = this.maxAdaptiveSPP;
+        // Prevent sudden +>2 jumps per frame
+        if (chosen > this.lastSPPUsed + 2) chosen = this.lastSPPUsed + 2;
+        return chosen;
     }
 
    // Initialize now takes a Scene object
@@ -357,23 +393,27 @@ export class Renderer {
             offset += sphereStride;
         }
 
-        // 3. Write cylinder data
+        // 3. Write cylinder data (center, radius, axis, halfHeight, color, material)
         for (const cylinder of scene.cylinders) {
-            const normalized_axis = normalize(cylinder.axis);
-            const half_height_vec = scale(normalized_axis, cylinder.height / 2);
-            const p1 = subtract(cylinder.center, half_height_vec);
-            const p2 = add(cylinder.center, half_height_vec);
-            
-            // Correctly pack data according to WGSL struct alignment
-            // p1: vec3<f32> (offset 0, 3 floats)
-            sceneData.set(p1, offset);
-            // radius: f32 (offset 3, 1 float)
+            const axisN = normalize(cylinder.axis);
+            const halfH = cylinder.height * 0.5;
+            // center (0..2)
+            sceneData[offset + 0] = cylinder.center[0];
+            sceneData[offset + 1] = cylinder.center[1];
+            sceneData[offset + 2] = cylinder.center[2];
+            // radius (3)
             sceneData[offset + 3] = cylinder.radius;
-            // p2: vec3<f32> (offset 4, 3 floats)
-            sceneData.set(p2, offset + 4);
-            // color: vec3<f32> (offset 8, 3 floats)
-            sceneData.set(cylinder.color, offset + 8);
-            // materialType: i32 (offset 11)
+            // axis (4..6)
+            sceneData[offset + 4] = axisN[0];
+            sceneData[offset + 5] = axisN[1];
+            sceneData[offset + 6] = axisN[2];
+            // halfHeight (7)
+            sceneData[offset + 7] = halfH;
+            // color (8..10)
+            sceneData[offset + 8] = cylinder.color[0];
+            sceneData[offset + 9] = cylinder.color[1];
+            sceneData[offset + 10] = cylinder.color[2];
+            // material (11)
             sceneData[offset + 11] = cylinder.material.type;
             offset += cylinderStride;
         }
@@ -547,20 +587,26 @@ export class Renderer {
             offset += lineStride;
         }
 
-        // Cone 데이터 패킹 (16 floats for 4-byte alignment)
+        // Cone 데이터 패킹 (stride 16) + 파생값(invHeight, cosAlpha, sinAlpha) 사전 계산
         for (const cone of scene.cones) {
+            const h = cone.height;
+            const r = cone.radius;
+            const invH = h !== 0 ? 1.0 / h : 0.0;
+            const hyp = Math.hypot(h, r); // sqrt(h^2 + r^2)
+            const cosAlpha = hyp !== 0 ? h / hyp : 1.0; // 안정성 처리
+            const sinAlpha = hyp !== 0 ? r / hyp : 0.0;
             sceneData[offset + 0] = cone.center[0];
             sceneData[offset + 1] = cone.center[1];
             sceneData[offset + 2] = cone.center[2];
-            sceneData[offset + 3] = 0; // padding
+            sceneData[offset + 3] = 0; // padding (unused)
             sceneData[offset + 4] = cone.axis[0];
             sceneData[offset + 5] = cone.axis[1];
             sceneData[offset + 6] = cone.axis[2];
-            sceneData[offset + 7] = cone.height;
-            sceneData[offset + 8] = cone.radius;
-            sceneData[offset + 9] = 0; // padding
-            sceneData[offset + 10] = 0; // padding
-            sceneData[offset + 11] = 0; // padding
+            sceneData[offset + 7] = h;
+            sceneData[offset + 8] = r;
+            sceneData[offset + 9] = invH;
+            sceneData[offset + 10] = cosAlpha;
+            sceneData[offset + 11] = sinAlpha;
             sceneData[offset + 12] = cone.color[0];
             sceneData[offset + 13] = cone.color[1];
             sceneData[offset + 14] = cone.color[2];
@@ -704,9 +750,10 @@ export class Renderer {
         }
 
         // Create or reuse storage buffer for the scene data (initial build path) with tracking
-        if (!this.sceneBuffer || this.sceneBufferDevice !== this.device || this.sceneBufferCapacity < sceneData.byteLength) {
+        if (!this.sceneBuffer || this.sceneBufferDevice !== this.device || this.sceneBufferCapacity < sceneData.byteLength || (this.sceneBufferCapacity & 3) !== 0) {
             if (this.sceneBuffer) { try { this.sceneBuffer.destroy(); } catch {} }
-            const newCap = Math.max(sceneData.byteLength, 1024 * 1024);
+            let newCap = Math.max(sceneData.byteLength, 1024 * 1024);
+            newCap = (newCap + 255) & ~255; // 256-byte align
             this.sceneBuffer = this.device.createBuffer({
                 size: newCap,
                 usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -723,6 +770,10 @@ export class Renderer {
         
     this.device.queue.writeBuffer(this.sceneBuffer, 0, sceneData);
 
+        // --- Scene Hash (초기) ---
+        this.lastSceneHash = this.computeSceneHash(sceneData);
+        this.sceneChangedThisFrame = true; // 초기 생성은 변경으로 간주
+
         // --- BVH Construction ---
         if (this.enableBVH) {
             this.buildBVH(scene);
@@ -738,7 +789,7 @@ export class Renderer {
         // samples_per_pixel: 안티앨리어싱용 샘플 수 (예: 100)
         // seed: 랜덤 생성기 시드값 (매 프레임 변경)
         this.uniform_buffer = this.device.createBuffer({
-            size: 16, // samples_per_pixel, seed, frame_count, reset_flag (4*4bytes)
+            size: 24, // + useBVH flag (u32) => 6*4 bytes
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 
         });
         // UNIFORM: 작은 데이터(~64KB), 빠른 접근, 모든 스레드가 동일한 값
@@ -1153,17 +1204,21 @@ export class Renderer {
             offset += sphereStride;
         }
 
-        // Cylinders
+        // Cylinders (center, radius, axis, halfHeight, color, material)
         for (const cylinder of scene.cylinders) {
-            const normalized_axis = normalize(cylinder.axis);
-            const half_height_vec = scale(normalized_axis, cylinder.height / 2);
-            const p1 = subtract(cylinder.center, half_height_vec);
-            const p2 = add(cylinder.center, half_height_vec);
-            
-            sceneData.set(p1, offset);
+            const axisN = normalize(cylinder.axis);
+            const halfH = cylinder.height * 0.5;
+            sceneData[offset + 0] = cylinder.center[0];
+            sceneData[offset + 1] = cylinder.center[1];
+            sceneData[offset + 2] = cylinder.center[2];
             sceneData[offset + 3] = cylinder.radius;
-            sceneData.set(p2, offset + 4);
-            sceneData.set(cylinder.color, offset + 8);
+            sceneData[offset + 4] = axisN[0];
+            sceneData[offset + 5] = axisN[1];
+            sceneData[offset + 6] = axisN[2];
+            sceneData[offset + 7] = halfH;
+            sceneData[offset + 8] = cylinder.color[0];
+            sceneData[offset + 9] = cylinder.color[1];
+            sceneData[offset + 10] = cylinder.color[2];
             sceneData[offset + 11] = cylinder.material.type;
             offset += cylinderStride;
         }
@@ -1320,20 +1375,26 @@ export class Renderer {
             offset += lineStride;
         }
 
-        // Cones (16 floats with padding for alignment)
+        // Cones (stride 16) + 파생값(invHeight, cosAlpha, sinAlpha)
         for (const cone of scene.cones) {
+            const h = cone.height;
+            const r = cone.radius;
+            const invH = h !== 0 ? 1.0 / h : 0.0;
+            const hyp = Math.hypot(h, r);
+            const cosAlpha = hyp !== 0 ? h / hyp : 1.0;
+            const sinAlpha = hyp !== 0 ? r / hyp : 0.0;
             sceneData[offset + 0] = cone.center[0];
             sceneData[offset + 1] = cone.center[1];
             sceneData[offset + 2] = cone.center[2];
-            sceneData[offset + 3] = 0; // padding
+            sceneData[offset + 3] = 0;
             sceneData[offset + 4] = cone.axis[0];
             sceneData[offset + 5] = cone.axis[1];
             sceneData[offset + 6] = cone.axis[2];
-            sceneData[offset + 7] = cone.height;
-            sceneData[offset + 8] = cone.radius;
-            sceneData[offset + 9] = 0; // padding
-            sceneData[offset + 10] = 0; // padding
-            sceneData[offset + 11] = 0; // padding
+            sceneData[offset + 7] = h;
+            sceneData[offset + 8] = r;
+            sceneData[offset + 9] = invH;
+            sceneData[offset + 10] = cosAlpha;
+            sceneData[offset + 11] = sinAlpha;
             sceneData[offset + 12] = cone.color[0];
             sceneData[offset + 13] = cone.color[1];
             sceneData[offset + 14] = cone.color[2];
@@ -1458,6 +1519,13 @@ export class Renderer {
         // 데이터 업데이트
         this.device.queue.writeBuffer(this.sceneBuffer, 0, sceneData);
 
+        // Scene hash 계산 및 변경 감지
+        const newHash = this.computeSceneHash(sceneData);
+        if (newHash !== this.lastSceneHash) {
+            this.lastSceneHash = newHash;
+            this.sceneChangedThisFrame = true;
+        }
+
         // BVH 업데이트 (frustum culling된 scene으로)
         if (this.enableBVH) {
             this.buildBVH(scene);
@@ -1469,12 +1537,15 @@ export class Renderer {
 
     render = (look_from: vec3, look_at: vec3, v_up: vec3, v_fov: number, aspect_ratio: number) => {
         // --- 카메라 이동 감지 (간단: 이전 origin/target 비교) ---
-        const camMoved = (() => {
-            if (!this._lastCamFrom || !this._lastCamAt) return true;
+        const camMovedInfo = (() => {
+            if (!this._lastCamFrom || !this._lastCamAt) return { any:true, pos:true, rot:true };
             const df = Math.hypot(look_from[0]-this._lastCamFrom[0], look_from[1]-this._lastCamFrom[1], look_from[2]-this._lastCamFrom[2]);
             const da = Math.hypot(look_at[0]-this._lastCamAt[0], look_at[1]-this._lastCamAt[1], look_at[2]-this._lastCamAt[2]);
-            return (df+da) > 1e-4;
+            const posMoved = df > 1e-4;
+            const rotOnly = !posMoved && da > 1e-4;
+            return { any: (df+da) > 1e-4, pos: posMoved, rot: rotOnly };
         })();
+        const camMoved = camMovedInfo.any;
         this._lastCamFrom = [...look_from];
         this._lastCamAt = [...look_at];
 
@@ -1482,11 +1553,15 @@ export class Renderer {
         if (camMoved) {
             const culledScene = this.performFrustumCulling(look_from, look_at, v_up, v_fov, aspect_ratio);
             this.updateSceneBuffer(culledScene);
-            this.frameCounter = 0; // reset accumulation (no previous frames)
             this.cameraChangedThisFrame = true;
             this.lastAccumPrevIndex = -1; // force bindgroup rebuild
         } else {
             this.cameraChangedThisFrame = false;
+        }
+
+        // Scene 변경 또는 카메라 이동 시 누적 초기화
+        if (camMoved || this.sceneChangedThisFrame) {
+            this.frameCounter = 0;
         }
 
         // --- Camera Calculation ---
@@ -1515,17 +1590,33 @@ export class Renderer {
         // --- Update Uniforms ---
         // --- Adaptive Samples Per Pixel ---
         // 카메라가 움직이면 노이즈 억제를 위한 누적 대신 빠른 응답 위해 낮춤, 멈추면 점증
-        if (camMoved) {
-            this._accumulatedStillFrames = 0;
+        if (camMoved || this.sceneChangedThisFrame) {
+            if (camMovedInfo.pos || this.sceneChangedThisFrame) {
+                // Position change: stronger decay
+                this._accumulatedStillFrames = Math.floor(this._accumulatedStillFrames * 0.15);
+                const targetDrop = Math.max(this.minAdaptiveSPP, Math.floor(this.lastSPPUsed * 0.4));
+                if (targetDrop < this.lastSPPUsed) this.lastSPPUsed = targetDrop;
+            } else if (camMovedInfo.rot) {
+                // Pure rotation: mild decay
+                this._accumulatedStillFrames = Math.floor(this._accumulatedStillFrames * 0.6);
+                const targetDrop = Math.max(this.minAdaptiveSPP, Math.floor(this.lastSPPUsed * 0.7));
+                if (targetDrop < this.lastSPPUsed) this.lastSPPUsed = targetDrop;
+            }
         } else {
-            this._accumulatedStillFrames = Math.min(this._accumulatedStillFrames + 1, 240);
+            this._accumulatedStillFrames = Math.min(this._accumulatedStillFrames + 1, 1000);
         }
-    const samples_per_pixel = 1; // temporal accumulation: 항상 1 샘플
+    const samples_per_pixel = this.computeAdaptiveSPP();
+    if (samples_per_pixel !== this.lastSPPUsed) {
+        console.log(`[AdaptiveSPP] stillFrames=${this._accumulatedStillFrames} -> spp=${samples_per_pixel}`);
+        this.lastSPPUsed = samples_per_pixel;
+    }
     // frameCounter는 '지금까지 누적된 프레임 수(이전 프레임들)'이므로 여기서 증가시키지 않음. (Submit 후 증가)
         const seed = Math.random() * 4294967295; // Random u32
-    const resetFlag = this.cameraChangedThisFrame ? 1 : 0;
+    const resetFlag = (this.cameraChangedThisFrame || this.sceneChangedThisFrame) ? 1 : 0;
     const frameCountForGPU = this.frameCounter >>> 0; // clamp to u32
-    const uniformData = new Uint32Array([samples_per_pixel, seed, frameCountForGPU, resetFlag]);
+    const disabledTypeMask = 0; // TODO: expose UI to toggle types
+    const useBVHFlag = this.useBVHThisFrame ? 1 : 0;
+    const uniformData = new Uint32Array([samples_per_pixel, seed, frameCountForGPU, resetFlag, disabledTypeMask, useBVHFlag]);
     this.device.queue.writeBuffer(this.uniform_buffer, 0, uniformData);
 
         const commandEncoder : GPUCommandEncoder = this.device.createCommandEncoder();
@@ -1568,16 +1659,21 @@ export class Renderer {
     
     this.device.queue.submit([commandEncoder.finish()]);
 
-    // 프레임 처리 후 누적 프레임 수 증가 (카메라가 움직였던 프레임은 0에서 첫 누적, 움직인 프레임도 포함하여 count 증가)
+    // 프레임 처리 후 누적 프레임 수 증가 (리셋된 프레임은 0에서 시작)
     this.frameCounter++;
+    // Scene 변경 플래그 소모
+    this.sceneChangedThisFrame = false;
 
     }
 
     // BVH 구축 메서드
     buildBVH(scene: Scene): void {
-        const result = this.bvhBuilder.buildBVH(scene);
-        this.bvhNodes = result.nodes;
-        this.bvhPrimitiveIndices = result.primitiveIndices;
+    const result = this.bvhBuilder.buildBVH(scene);
+    this.lastBVHStats = result.stats;
+    // Auto fallback: if stats.autoFallback, disable BVH traversal (brute force path)
+    this.useBVHThisFrame = !result.stats.autoFallback && this.enableBVH;
+    this.bvhNodes = result.nodes;
+    this.bvhPrimitiveIndices = result.primitiveIndices;
 
         // BVH 노드 데이터를 GPU 버퍼로 패킹
         if (this.bvhNodes.length > 0) {
@@ -1595,9 +1691,11 @@ export class Renderer {
                 nodeData[offset + 7] = node.primitiveCount;
             }
             const needed = Math.max(nodeData.byteLength, 16);
-            if (!this.bvhBuffer || this.bvhBufferCapacity < needed) {
+            if (!this.bvhBuffer || this.bvhBufferCapacity < needed || (this.bvhBufferCapacity & 3) !== 0) {
                 if (this.bvhBuffer) { try { this.bvhBuffer.destroy(); } catch {} }
-                const newCap = Math.ceil(needed * 1.5);
+                let newCap = Math.ceil(needed * 1.5);
+                // 256-byte alignment to satisfy WebGPU storage buffer alignment & multiple-of-4
+                newCap = (newCap + 255) & ~255;
                 this.bvhBuffer = this.device.createBuffer({
                     size: newCap,
                     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -1611,9 +1709,10 @@ export class Renderer {
         if (this.bvhPrimitiveIndices.length > 0) {
             const indexData = new Uint32Array(this.bvhPrimitiveIndices);
             const needed = Math.max(indexData.byteLength, 16);
-            if (!this.primitiveIndexBuffer || this.primitiveIndexBufferCapacity < needed) {
+            if (!this.primitiveIndexBuffer || this.primitiveIndexBufferCapacity < needed || (this.primitiveIndexBufferCapacity & 3) !== 0) {
                 if (this.primitiveIndexBuffer) { try { this.primitiveIndexBuffer.destroy(); } catch {} }
-                const newCap = Math.ceil(needed * 1.5);
+                let newCap = Math.ceil(needed * 1.5);
+                newCap = (newCap + 255) & ~255;
                 this.primitiveIndexBuffer = this.device.createBuffer({
                     size: newCap,
                     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -1635,9 +1734,10 @@ export class Renderer {
                 primitiveInfoData[offset + 3] = 0;
             }
             const needed = Math.max(primitiveInfoData.byteLength, 16);
-            if (!this.primitiveInfoBuffer || this.primitiveInfoBufferCapacity < needed) {
+            if (!this.primitiveInfoBuffer || this.primitiveInfoBufferCapacity < needed || (this.primitiveInfoBufferCapacity & 3) !== 0) {
                 if (this.primitiveInfoBuffer) { try { this.primitiveInfoBuffer.destroy(); } catch {} }
-                const newCap = Math.ceil(needed * 1.5);
+                let newCap = Math.ceil(needed * 1.5);
+                newCap = (newCap + 255) & ~255;
                 this.primitiveInfoBuffer = this.device.createBuffer({
                     size: newCap,
                     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -1662,9 +1762,26 @@ export class Renderer {
         this.enableBVH = !this.enableBVH;
         if (this.enableBVH && this.currentScene) {
             this.buildBVH(this.currentScene);
+        } else {
+            this.useBVHThisFrame = false;
         }
         this.rebuildRayTracingBindGroup();
         console.log(`BVH: ${this.enableBVH ? 'Enabled' : 'Disabled'}`);
+        if (this.lastBVHStats) {
+            console.log(`[BVH Stats] prims=${this.lastBVHStats.primitiveCount} autoFallback=${this.lastBVHStats.autoFallback} gain=${(this.lastBVHStats.improvementRatio*100).toFixed(1)}%`);
+        }
+    }
+
+    // FNV-1a 32bit 해시 (Float32Array 기반). 장면 변경 감지용.
+    private computeSceneHash(arr: Float32Array): number {
+        let h = 0x811c9dc5 >>> 0; // offset basis
+        const view = new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
+        // 바이트 단위 처리 (정밀도 변화에도 안정적)
+        for (let i = 0; i < view.byteLength; i++) {
+            h ^= view.getUint8(i);
+            h = Math.imul(h, 0x01000193) >>> 0; // FNV prime
+        }
+        return h >>> 0;
     }
     
 }

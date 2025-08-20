@@ -722,26 +722,21 @@ fn calculate_cone_normal(cone: Cone, hit_point: vec3<f32>) -> vec3<f32> {
 
 // BVH AABB intersection test
 fn ray_aabb_intersect(ray: Ray, minCorner: vec3<f32>, maxCorner: vec3<f32>) -> f32 {
+    // 개선: 노드 프루닝 시 '입구(entry) t' 를 사용해야 가까운 프리미티브를 놓치지 않음.
+    // 기존 코드는 내부(origin이 AABB 안)일 때 '나가는 지점 t_far' 를 반환하여
+    // 이미 큰 t 를 가진 hit 을 가진 상태에서 이 노드를 잘못 스킵하는 문제가 있었음.
+    // (aabb_t > closest_hit.t 조건으로 continue) → 더 가까운 물체가 뒤로 비쳐 보이는 현상.
     let inv_dir = 1.0 / ray.direction;
-    
     let t1 = (minCorner - ray.origin) * inv_dir;
     let t2 = (maxCorner - ray.origin) * inv_dir;
-    
-    let t_min = min(t1, t2);
-    let t_max = max(t1, t2);
-    
-    let t_near = max(max(t_min.x, t_min.y), t_min.z);
-    let t_far = min(min(t_max.x, t_max.y), t_max.z);
-    
-    if (t_near > t_far || t_far < 0.0) {
-        return -1.0; // No intersection
-    }
-    
-    if (t_near > 0.0) {
-        return t_near;
-    }
-    
-    return t_far;
+    let t_min_v = min(t1, t2);
+    let t_max_v = max(t1, t2);
+    let t_near = max(max(t_min_v.x, t_min_v.y), t_min_v.z);
+    let t_far  = min(min(t_max_v.x, t_max_v.y), t_max_v.z);
+    if (t_near > t_far || t_far < 0.0) { return -1.0; }
+    // 박스 안에 있으면 t_near 는 음수 → 0 으로 클램프 (즉, 즉시 도달)
+    let entry = select(0.0, t_near, t_near > 0.0);
+    return entry;
 }
 
 //------------------------------------------------------------------------------

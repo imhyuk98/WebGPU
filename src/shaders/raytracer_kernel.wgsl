@@ -34,6 +34,14 @@ struct Camera {
 // Debug variable to inspect color values
 var<private> debug_color: vec3<f32>;
 
+// -----------------------------------------------------------------------------
+// Temporary debug switches for occlusion investigation.
+// DEBUG_MODE = 0 : normal rendering
+// DEBUG_MODE = 1 : visualize primary hit distance (t) as grayscale (closer = brighter)
+// DEBUG_MODE = 2 : visualize geometry type (requires encoding in test_primitive_intersection)
+// -----------------------------------------------------------------------------
+const DEBUG_MODE: u32 = 0u; // 0 normal, 1 depth grayscale, 2 geom type palette, 3 BVH traversal t-range debug
+
 // A simple pseudo-random number generator
 fn pcg(v_in: u32) -> u32 {
     var v = v_in * 747796405u + 2891336453u;
@@ -60,6 +68,8 @@ fn trace_bvh(ray: Ray) -> Hit {
     closest_hit.materialType = -1;
     closest_hit.color = vec3<f32>(0.7, 0.8, 1.0); // Light blue background
     closest_hit.normal = vec3<f32>(0.0, 1.0, 0.0); // Default normal
+    var min_tested_t: f32 = 1000000.0;
+    var max_recorded_t: f32 = -1.0;
     
     // Stack for BVH traversal (limit depth to prevent overflow)
     var stack: array<u32, 32>;
@@ -95,8 +105,12 @@ fn trace_bvh(ray: Ray) -> Hit {
                 // which type each primitive is and call the appropriate intersection function
                 let hit_result = test_primitive_intersection(ray, primitive_index);
                 
-                if (hit_result.t > 0.0 && hit_result.t < closest_hit.t) {
-                    closest_hit = hit_result;
+                if (hit_result.t > 0.0) {
+                    if (hit_result.t < min_tested_t) { min_tested_t = hit_result.t; }
+                    if (hit_result.t > max_recorded_t) { max_recorded_t = hit_result.t; }
+                    if (hit_result.t < closest_hit.t) {
+                        closest_hit = hit_result;
+                    }
                 }
             }
         } else {
@@ -114,6 +128,16 @@ fn trace_bvh(ray: Ray) -> Hit {
         }
     }
     
+    if (DEBUG_MODE == 3u) {
+        // Encode min/max t tested in RGB for debugging (primary ray only usage recommended)
+        // R = min_t / 50, G = closest_hit.t / 50, B = max_t / 50 (clamped)
+        let r = clamp(min_tested_t / 50.0, 0.0, 1.0);
+        let g = clamp(closest_hit.t / 50.0, 0.0, 1.0);
+        let b = clamp(max_recorded_t / 50.0, 0.0, 1.0);
+        closest_hit.color = vec3<f32>(r, g, b);
+        closest_hit.materialType = 0;
+        closest_hit.t = closest_hit.t; // unchanged
+    }
     return closest_hit;
 }
 
@@ -274,6 +298,18 @@ fn test_primitive_intersection(ray: Ray, primitive_index: u32) -> Hit {
         }
     }
     
+    // If debugging geometry types (mode 2), encode the geometryType as a color band regardless of material.
+    if (DEBUG_MODE == 2u && hit.t > 0.0) {
+        let g = f32(geometry_type);
+        // Simple categorical palette using fractional part tricks (avoid branching for speed)
+        hit.color = fract(vec3<f32>(
+            g * 0.3125 + 0.13,
+            g * 0.1875 + 0.27,
+            g * 0.4231 + 0.49
+        ));
+        hit.materialType = 0; // force lambert for stable visualization
+    }
+
     return hit;
 }
 
@@ -504,6 +540,13 @@ fn trace(r: Ray) -> vec3<f32> {
         // Check if ray hit anything
         if (closest_hit.t < 100000.0) {
             let hit_point = current_ray.origin + current_ray.direction * closest_hit.t;
+
+            // Depth visualization (only for the very first bounce / primary hit)
+            if (DEBUG_MODE == 1u && bounce == 0u) {
+                // Map t to a perceptual-ish grayscale (near 0 => bright, far => dark)
+                let t_norm = clamp(closest_hit.t / 50.0, 0.0, 1.0);
+                return vec3<f32>(1.0 - t_norm);
+            }
             
             // Material handling
             if (closest_hit.materialType == 1) { // METAL material - reflection

@@ -347,7 +347,7 @@ function createTorusFieldScene(): Scene {
     const toruses: TorusInput[] = [];
     
     // 10x10x10 = 1000개의 토러스를 격자로 배치
-    const gridSize = 10;
+    const gridSize = 30;
     const spacing = 6; // 토러스 간 간격
     const totalSize = (gridSize - 1) * spacing;
     const offset = totalSize / 2; // 중앙 정렬

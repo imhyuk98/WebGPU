@@ -21,6 +21,12 @@ export class BVHBuilder {
     private primitiveIndices: number[] = [];
     private nodesUsed: number = 0;
 
+    // Tunable build parameters
+    private static readonly MAX_LEAF_SIZE = 8;  // target upper bound of primitives per leaf
+    private static readonly MIN_LEAF_SIZE = 4;  // avoid creating children smaller than this when splitting
+    private static readonly EPS_IMPROVE = 0.02; // minimal fractional improvement to justify splitting
+    private static readonly FORCED_SPLIT_COUNT = 32; // always attempt split above this primitive count
+
     constructor() {}
 
     buildBVH(scene: Scene): { nodes: BVHNode[], primitiveIndices: number[], primitiveInfos: { type: number, index: number }[], stats: BVHStats } {
@@ -63,7 +69,8 @@ export class BVHBuilder {
         const rootSplit = this.findBestSplit(0, primCount);
         const rootBestCost = rootSplit.cost; // Infinity means invalid / no split
         const improvementRatio = (rootBestCost === Infinity) ? 0 : Math.max(0, (rootDirectCost - rootBestCost) / rootDirectCost);
-        const autoFallback = (primCount < SMALL_THRESHOLD) || (rootBestCost === Infinity) || (improvementRatio < IMPROVEMENT_THRESHOLD);
+        // Only fallback for small scenes
+        const autoFallback = (primCount < SMALL_THRESHOLD);
 
         if (autoFallback) {
             // Skip building full BVH; return empty nodes (renderer will brute-force when useBVH flag is off)
@@ -89,39 +96,128 @@ export class BVHBuilder {
         //     console.log(`  ${i}: center=${p.center}, type=${p.type}`);
         // }
 
-        // 재귀적으로 분할
+        // 통계 래퍼 + 내부 통합 함수
         let leafCount = 0;
         let leafPrimTotal = 0;
         let maxLeaf = 0;
-        // Wrap original subdivide to collect stats
-        const subdivideWithStats = (nodeIndex: number, first: number, count: number) => {
+        const MAX_DEPTH = 62;
+        // 내부 분할 함수
+        const subdivideCore = (nodeIndex: number, first: number, count: number, depth: number = 0, stats?: { leafCount?: number, leafPrimTotal?: number, maxLeaf?: number }) => {
             const node = this.nodes[nodeIndex];
-            // termination mirrored from subdivide logic
-            if (count <= 4) {
+            if (depth > MAX_DEPTH) {
                 node.leftChild = first;
                 node.primitiveCount = count;
-                leafCount++;
-                leafPrimTotal += count;
-                if (count > maxLeaf) maxLeaf = count;
+                if (stats) {
+                    stats.leafCount!++;
+                    stats.leafPrimTotal! += count;
+                    if (count > stats.maxLeaf!) stats.maxLeaf! = count;
+                }
+                return;
+            }
+            if (count <= BVHBuilder.MAX_LEAF_SIZE) {
+                node.leftChild = first;
+                node.primitiveCount = count;
+                if (stats) {
+                    stats.leafCount!++;
+                    stats.leafPrimTotal! += count;
+                    if (count > stats.maxLeaf!) stats.maxLeaf! = count;
+                }
                 return;
             }
             const bestSplit = this.findBestSplit(first, count);
-            const shouldForceSplit = count > 32;
-            if (bestSplit.cost === Infinity || (!shouldForceSplit && bestSplit.cost >= count * 0.8)) {
+            const directCost = 1 + count;
+            const shouldForceSplit = count > BVHBuilder.FORCED_SPLIT_COUNT;
+            if (bestSplit.cost === Infinity) {
+                if (count > BVHBuilder.MAX_LEAF_SIZE) {
+                    // Build centroid AABB
+                    const centroidAABB = new AABB();
+                    for (let i = 0; i < count; i++) {
+                        const prim = this.primitives[this.primitiveIndices[first + i]];
+                        centroidAABB.grow(prim.center as any);
+                    }
+                    const ext = [
+                        centroidAABB.max[0] - centroidAABB.min[0],
+                        centroidAABB.max[1] - centroidAABB.min[1],
+                        centroidAABB.max[2] - centroidAABB.min[2]
+                    ];
+                    let axis = 0;
+                    if (ext[1] > ext[axis]) axis = 1;
+                    if (ext[2] > ext[axis]) axis = 2;
+                    // Median sort with comparator jitter only
+                    const slice = this.primitiveIndices.slice(first, first + count);
+                    slice.sort((a, b) => {
+                        const jitterA = ((a*16807) & 0xffff) / 0xffff * 1e-6;
+                        const jitterB = ((b*16807) & 0xffff) / 0xffff * 1e-6;
+                        return (this.primitives[a].center[axis] + jitterA) - (this.primitives[b].center[axis] + jitterB);
+                    });
+                    for (let i = 0; i < count; i++) this.primitiveIndices[first + i] = slice[i];
+                    const mid = first + (count >> 1);
+                    const leftCount = mid - first;
+                    const rightCount = count - leftCount;
+                    node.leftChild = this.nodesUsed;
+                    node.primitiveCount = 0;
+                    const leftChildIndex = this.nodesUsed++;
+                    const rightChildIndex = this.nodesUsed++;
+                    if (rightChildIndex >= this.nodes.length) {
+                        node.leftChild = first;
+                        node.primitiveCount = count;
+                        if (stats) {
+                            stats.leafCount!++;
+                            stats.leafPrimTotal! += count;
+                            if (count > stats.maxLeaf!) stats.maxLeaf! = count;
+                        }
+                        this.nodesUsed = Math.min(this.nodesUsed, this.nodes.length);
+                        return;
+                    }
+                    this.updateNodeBounds(leftChildIndex, first, leftCount);
+                    this.updateNodeBounds(rightChildIndex, mid, rightCount);
+                    subdivideCore(leftChildIndex, first, leftCount, depth+1, stats);
+                    subdivideCore(rightChildIndex, mid, rightCount, depth+1, stats);
+                    return;
+                } else {
+                    node.leftChild = first;
+                    node.primitiveCount = count;
+                    if (stats) {
+                        stats.leafCount!++;
+                        stats.leafPrimTotal! += count;
+                        if (count > stats.maxLeaf!) stats.maxLeaf! = count;
+                    }
+                    return;
+                }
+            }
+            if (bestSplit.cost === Infinity || (!shouldForceSplit && bestSplit.cost >= directCost * (1 - BVHBuilder.EPS_IMPROVE))) {
                 node.leftChild = first;
                 node.primitiveCount = count;
-                leafCount++;
-                leafPrimTotal += count;
-                if (count > maxLeaf) maxLeaf = count;
+                if (stats) {
+                    stats.leafCount!++;
+                    stats.leafPrimTotal! += count;
+                    if (count > stats.maxLeaf!) stats.maxLeaf! = count;
+                }
                 return;
             }
-            const mid = this.partition(first, count, bestSplit.axis, bestSplit.pos);
+            let mid = this.partition(first, count, bestSplit.axis, bestSplit.pos);
+            let leftCount = mid - first;
+            let rightCount = count - leftCount;
+            if ((leftCount < BVHBuilder.MIN_LEAF_SIZE || rightCount < BVHBuilder.MIN_LEAF_SIZE) && count > BVHBuilder.MAX_LEAF_SIZE) {
+                const slice = this.primitiveIndices.slice(first, first + count);
+                slice.sort((a, b) => {
+                    const jitterA = ((a*16807) & 0xffff) / 0xffff * 1e-6;
+                    const jitterB = ((b*16807) & 0xffff) / 0xffff * 1e-6;
+                    return (this.primitives[a].center[bestSplit.axis] + jitterA) - (this.primitives[b].center[bestSplit.axis] + jitterB);
+                });
+                for (let i = 0; i < count; i++) this.primitiveIndices[first + i] = slice[i];
+                mid = first + (count >> 1);
+                leftCount = mid - first;
+                rightCount = count - leftCount;
+            }
             if (mid <= first || mid >= first + count) {
                 node.leftChild = first;
                 node.primitiveCount = count;
-                leafCount++;
-                leafPrimTotal += count;
-                if (count > maxLeaf) maxLeaf = count;
+                if (stats) {
+                    stats.leafCount!++;
+                    stats.leafPrimTotal! += count;
+                    if (count > stats.maxLeaf!) stats.maxLeaf! = count;
+                }
                 return;
             }
             node.leftChild = this.nodesUsed;
@@ -131,19 +227,30 @@ export class BVHBuilder {
             if (rightChildIndex >= this.nodes.length) {
                 node.leftChild = first;
                 node.primitiveCount = count;
-                leafCount++;
-                leafPrimTotal += count;
-                if (count > maxLeaf) maxLeaf = count;
-                this.nodesUsed = Math.min(this.nodesUsed, this.nodes.length);
-                return;
+                if (stats) {
+                    stats.leafCount!++;
+                    stats.leafPrimTotal! += count;
+                    if (count > stats.maxLeaf!) stats.maxLeaf! = count;
+                }
+                this.nodesUsed = Math.min(this.nodesUsed, this.nodes.length); return;
             }
-            this.updateNodeBounds(leftChildIndex, first, mid - first);
-            this.updateNodeBounds(rightChildIndex, mid, count - (mid - first));
-            subdivideWithStats(leftChildIndex, first, mid - first);
-            subdivideWithStats(rightChildIndex, mid, count - (mid - first));
+            // AABB reuse guard: only use precomputed if counts match
+            const canReusePrecomputed = bestSplit.leftCount === leftCount && bestSplit.rightCount === rightCount && bestSplit.leftAABB && bestSplit.rightAABB;
+            if (canReusePrecomputed) {
+                this.nodes[leftChildIndex].minCorner = [...bestSplit.leftAABB!.min];
+                this.nodes[leftChildIndex].maxCorner = [...bestSplit.leftAABB!.max];
+                this.nodes[rightChildIndex].minCorner = [...bestSplit.rightAABB!.min];
+                this.nodes[rightChildIndex].maxCorner = [...bestSplit.rightAABB!.max];
+            } else {
+                this.updateNodeBounds(leftChildIndex, first, leftCount);
+                this.updateNodeBounds(rightChildIndex, mid, rightCount);
+            }
+            subdivideCore(leftChildIndex, first, leftCount, depth+1, stats);
+            subdivideCore(rightChildIndex, mid, rightCount, depth+1, stats);
         };
-
-        subdivideWithStats(0, 0, primCount);
+        // 통계 래퍼
+        const statsObj = { leafCount: 0, leafPrimTotal: 0, maxLeaf: 0 };
+        subdivideCore(0, 0, primCount, 0, statsObj);
 
         // Primitive 정보 배열 생성
         const primitiveInfos = this.primitives.map(primitive => ({ type: primitive.type, index: primitive.index }));
@@ -247,13 +354,14 @@ export class BVHBuilder {
         node.maxCorner = aabb.max;
     }
 
-    private subdivide(nodeIndex: number, first: number, count: number): void {
+    private subdivide(nodeIndex: number, first: number, count: number, depth: number = 0): void {
         const node = this.nodes[nodeIndex];
 
         // console.log(`Subdivide node ${nodeIndex}: first=${first}, count=${count}`);
 
         // 종료 조건: 적은 수의 primitive 또는 분할 불가능
-        if (count <= 4) { // 4개 이하면 리프 노드로 만들기
+    if (depth > 62) { node.leftChild = first; node.primitiveCount = count; return; }
+    if (count <= BVHBuilder.MAX_LEAF_SIZE) { // Leaf threshold
             // console.log(`  Leaf node: ${count} primitives`);
             node.leftChild = first;
             node.primitiveCount = count;
@@ -266,133 +374,185 @@ export class BVHBuilder {
         // console.log(`  Best split: axis=${bestSplit.axis}, pos=${bestSplit.pos}, cost=${bestSplit.cost}`);
         
         // 큰 노드는 강제로 분할
-        const shouldForceSplit = count > 32;
-
-        // 유효한 split 실패(Infinity) 또는 강제분할 아님 + 이득 없음 → leaf
-        if (bestSplit.cost === Infinity || (!shouldForceSplit && bestSplit.cost >= count * 0.8)) {
+    const directCost = 1 + count; // Ct + Ci*count
+    const shouldForceSplit = count > BVHBuilder.FORCED_SPLIT_COUNT;
+    if (bestSplit.cost === Infinity) {
+        if (count > BVHBuilder.MAX_LEAF_SIZE) {
+            const centroidAABB = new AABB();
+            for (let i = 0; i < count; i++) {
+                const prim = this.primitives[this.primitiveIndices[first + i]];
+                centroidAABB.grow(prim.center as any);
+            }
+            const ext = [
+                centroidAABB.max[0] - centroidAABB.min[0],
+                centroidAABB.max[1] - centroidAABB.min[1],
+                centroidAABB.max[2] - centroidAABB.min[2]
+            ];
+            let axis = 0; if (ext[1] > ext[axis]) axis = 1; if (ext[2] > ext[axis]) axis = 2;
+            const slice = this.primitiveIndices.slice(first, first + count);
+                    slice.sort((a, b) => {
+                        const jitterA = ((a*16807) & 0xffff) / 0xffff * 1e-6;
+                        const jitterB = ((b*16807) & 0xffff) / 0xffff * 1e-6;
+                        return (this.primitives[a].center[axis] + jitterA) - (this.primitives[b].center[axis] + jitterB);
+                    });
+            for (let i = 0; i < count; i++) this.primitiveIndices[first + i] = slice[i];
+            const mid = first + (count >> 1);
+            const leftCount = mid - first; const rightCount = count - leftCount;
+            node.leftChild = this.nodesUsed; node.primitiveCount = 0;
+            const leftChildIndex = this.nodesUsed++; const rightChildIndex = this.nodesUsed++;
+            if (rightChildIndex >= this.nodes.length) { node.leftChild = first; node.primitiveCount = count; this.nodesUsed = Math.min(this.nodesUsed, this.nodes.length); return; }
+            this.updateNodeBounds(leftChildIndex, first, leftCount);
+            this.updateNodeBounds(rightChildIndex, mid, rightCount);
+            this.subdivide(leftChildIndex, first, leftCount, depth+1);
+            this.subdivide(rightChildIndex, mid, rightCount, depth+1);
+            return;
+        } else {
+            node.leftChild = first; node.primitiveCount = count; return;
+        }
+    }
+    if (bestSplit.cost === Infinity || (!shouldForceSplit && bestSplit.cost >= directCost * (1 - BVHBuilder.EPS_IMPROVE))) {
             node.leftChild = first;
             node.primitiveCount = count;
             return;
         }
 
         // 분할점에 따라 primitive들을 정렬
-        const mid = this.partition(first, count, bestSplit.axis, bestSplit.pos);
-
-        // 분할 실패(양쪽 중 하나가 비었거나 변동 없음) → leaf로 전환
+        let mid = this.partition(first, count, bestSplit.axis, bestSplit.pos);
+        let leftCount = mid - first;
+        let rightCount = count - leftCount;
+        if ((leftCount < BVHBuilder.MIN_LEAF_SIZE || rightCount < BVHBuilder.MIN_LEAF_SIZE) && count > BVHBuilder.MAX_LEAF_SIZE) {
+            const slice = this.primitiveIndices.slice(first, first + count);
+                slice.sort((a, b) => {
+                    const jitterA = ((a*16807) & 0xffff) / 0xffff * 1e-6;
+                    const jitterB = ((b*16807) & 0xffff) / 0xffff * 1e-6;
+                    return (this.primitives[a].center[bestSplit.axis] + jitterA) - (this.primitives[b].center[bestSplit.axis] + jitterB);
+                });
+            for (let i = 0; i < count; i++) this.primitiveIndices[first + i] = slice[i];
+            mid = first + (count >> 1);
+            leftCount = mid - first;
+            rightCount = count - leftCount;
+        }
         if (mid <= first || mid >= first + count) {
             node.leftChild = first;
             node.primitiveCount = count;
             return;
         }
-
-        // 내부 노드로 설정
         node.leftChild = this.nodesUsed;
         node.primitiveCount = 0;
-
-        // 자식 노드들 생성
         const leftChildIndex = this.nodesUsed++;
         const rightChildIndex = this.nodesUsed++;
-
-        // 노드 배열 초과 방지
         if (rightChildIndex >= this.nodes.length) {
-            // 더 이상 공간 없으면 leaf로 롤백
             node.leftChild = first;
             node.primitiveCount = count;
-            this.nodesUsed = Math.min(this.nodesUsed, this.nodes.length); // 안전
-            return;
+            this.nodesUsed = Math.min(this.nodesUsed, this.nodes.length); return;
         }
-
-        // 자식 노드들의 경계 계산
-        this.updateNodeBounds(leftChildIndex, first, mid - first);
-        this.updateNodeBounds(rightChildIndex, mid, count - (mid - first));
-
-        // 재귀적으로 분할
-        this.subdivide(leftChildIndex, first, mid - first);
-        this.subdivide(rightChildIndex, mid, count - (mid - first));
+        if (bestSplit.leftAABB && bestSplit.rightAABB) {
+            this.nodes[leftChildIndex].minCorner = [...bestSplit.leftAABB.min];
+            this.nodes[leftChildIndex].maxCorner = [...bestSplit.leftAABB.max];
+            this.nodes[rightChildIndex].minCorner = [...bestSplit.rightAABB.min];
+            this.nodes[rightChildIndex].maxCorner = [...bestSplit.rightAABB.max];
+        } else {
+            this.updateNodeBounds(leftChildIndex, first, leftCount);
+            this.updateNodeBounds(rightChildIndex, mid, rightCount);
+        }
+        this.subdivide(leftChildIndex, first, leftCount, depth+1);
+        this.subdivide(rightChildIndex, mid, rightCount, depth+1);
     }
 
-    private findBestSplit(first: number, count: number): { axis: number, pos: number, cost: number } {
-        // Binned SAH (16 bins)
-        const BIN_COUNT = 16;
+    private findBestSplit(first: number, count: number): { axis: number, pos: number, cost: number, leftAABB?: AABB, rightAABB?: AABB, leftCount?: number, rightCount?: number } {
+        // Adaptive bin count
+        let BIN_COUNT = 16;
+        if (count > 4096) BIN_COUNT = 32;
+        else if (count > 512) BIN_COUNT = 24;
+        else if (count > 128) BIN_COUNT = 16;
+        else BIN_COUNT = 12;
         let bestCost = Infinity;
         let bestAxis = 0;
         let bestPos = 0;
+        let bestLeftAABB: AABB | undefined = undefined;
+        let bestRightAABB: AABB | undefined = undefined;
+        let bestLeftCount: number | undefined = undefined;
+        let bestRightCount: number | undefined = undefined;
 
-        // Precompute overall bounds to normalize centers
-        const globalAABB = new AABB();
+        // Parent bounds & area
+        const parentAABB = new AABB();
         for (let i = 0; i < count; i++) {
             const prim = this.primitives[this.primitiveIndices[first + i]];
-            globalAABB.growAABB(prim.aabb);
+            parentAABB.growAABB(prim.aabb);
         }
-        const extent = [
-            globalAABB.max[0] - globalAABB.min[0],
-            globalAABB.max[1] - globalAABB.min[1],
-            globalAABB.max[2] - globalAABB.min[2]
+        const parentArea = Math.max(1e-12, parentAABB.area());
+
+        // Centroid bounds
+        const centroidAABB = new AABB();
+        for (let i = 0; i < count; i++) {
+            const prim = this.primitives[this.primitiveIndices[first + i]];
+            centroidAABB.grow(prim.center as any);
+        }
+        const centroidExtent = [
+            centroidAABB.max[0] - centroidAABB.min[0],
+            centroidAABB.max[1] - centroidAABB.min[1],
+            centroidAABB.max[2] - centroidAABB.min[2]
         ];
 
-        for (let axis = 0; axis < 3; axis++) {
-            if (extent[axis] <= 1e-6) continue; // Degenerate extent, skip
-
-            // Bin accumulators
+    for (let axis = 0; axis < 3; axis++) {
+            const extent = centroidExtent[axis];
+            if (extent <= 1e-6) continue;
+            const invExtent = 1.0 / extent;
             const binCounts = new Array<number>(BIN_COUNT).fill(0);
             const binAABBs: AABB[] = Array.from({ length: BIN_COUNT }, () => new AABB());
 
-            const invExtent = 1.0 / extent[axis];
             // Fill bins
             for (let i = 0; i < count; i++) {
                 const prim = this.primitives[this.primitiveIndices[first + i]];
-                let c = prim.center[axis];
-                let t = (c - globalAABB.min[axis]) * invExtent; // 0..1
-                let b = Math.min(BIN_COUNT - 1, Math.max(0, Math.floor(t * BIN_COUNT)));
+                const t = (prim.center[axis] - centroidAABB.min[axis]) * invExtent;
+                const b = Math.min(BIN_COUNT - 1, Math.max(0, Math.floor(t * BIN_COUNT)));
                 binCounts[b]++;
                 binAABBs[b].growAABB(prim.aabb);
             }
 
-            // Prefix scan (left) and suffix scan (right)
+            // Prefix/suffix scans
             const leftCount = new Array<number>(BIN_COUNT).fill(0);
             const rightCount = new Array<number>(BIN_COUNT).fill(0);
             const leftAABB: AABB[] = Array.from({ length: BIN_COUNT }, () => new AABB());
             const rightAABB: AABB[] = Array.from({ length: BIN_COUNT }, () => new AABB());
-
-            let accumCount = 0;
-            let accumBox = new AABB();
+            let accC = 0; let accBox = new AABB();
             for (let i = 0; i < BIN_COUNT; i++) {
-                accumCount += binCounts[i];
-                leftCount[i] = accumCount;
-                accumBox.growAABB(binAABBs[i]);
-                // copy into leftAABB[i]
-                leftAABB[i].min = [...accumBox.min] as any;
-                leftAABB[i].max = [...accumBox.max] as any;
+                accC += binCounts[i];
+                leftCount[i] = accC;
+                accBox.growAABB(binAABBs[i]);
+                leftAABB[i].min = [...accBox.min] as any;
+                leftAABB[i].max = [...accBox.max] as any;
             }
-            accumCount = 0;
-            accumBox = new AABB();
+            accC = 0; accBox = new AABB();
             for (let i = BIN_COUNT - 1; i >= 0; i--) {
-                accumCount += binCounts[i];
-                rightCount[i] = accumCount;
-                accumBox.growAABB(binAABBs[i]);
-                rightAABB[i].min = [...accumBox.min] as any;
-                rightAABB[i].max = [...accumBox.max] as any;
+                accC += binCounts[i];
+                rightCount[i] = accC;
+                accBox.growAABB(binAABBs[i]);
+                rightAABB[i].min = [...accBox.min] as any;
+                rightAABB[i].max = [...accBox.max] as any;
             }
 
-            // Evaluate splits between bins (i vs i+1)
+            // Evaluate SAH splits
             for (let i = 0; i < BIN_COUNT - 1; i++) {
                 const lc = leftCount[i];
                 const rc = rightCount[i + 1];
-                if (lc === 0 || rc === 0) continue;
+                if (lc < BVHBuilder.MIN_LEAF_SIZE || rc < BVHBuilder.MIN_LEAF_SIZE) continue;
                 const la = leftAABB[i].area();
                 const ra = rightAABB[i + 1].area();
-                const cost = (lc * la + rc * ra) / Math.max(1e-9, la + ra);
-                if (cost < bestCost) {
-                    bestCost = cost;
+                const sahCost = 1 + (lc * la + rc * ra) / parentArea; // Ct=1, Ci=1
+                if (sahCost < bestCost) {
+                    bestCost = sahCost;
                     bestAxis = axis;
-                    // Split position: bin boundary
-                    const binStartNorm = (i + 1) / BIN_COUNT;
-                    bestPos = globalAABB.min[axis] + binStartNorm * extent[axis];
+                    const boundary = (i + 1) / BIN_COUNT;
+                    bestPos = centroidAABB.min[axis] + boundary * extent;
+                    bestLeftAABB = leftAABB[i].clone();
+                    bestRightAABB = rightAABB[i + 1].clone();
+                    bestLeftCount = lc;
+                    bestRightCount = rc;
                 }
             }
         }
-
-        return { axis: bestAxis, pos: bestPos, cost: bestCost };
+    return { axis: bestAxis, pos: bestPos, cost: bestCost, leftAABB: bestLeftAABB, rightAABB: bestRightAABB, leftCount: bestLeftCount, rightCount: bestRightCount };
     }
 
     private partition(first: number, count: number, axis: number, pos: number): number {

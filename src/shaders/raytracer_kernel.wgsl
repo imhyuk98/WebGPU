@@ -116,16 +116,36 @@ fn trace_bvh(ray: Ray) -> Hit {
                 }
             }
         } else {
-            // Internal node - add children to stack
+            // Internal node - add children to stack with near-first ordering
             let left_child = u32(node.leftChild);
             let right_child = left_child + 1u;
-            
-            // Add children to stack (right first for left-first traversal)
-            if (stack_ptr < 30u) { // Leave some room to prevent overflow
-                stack[stack_ptr] = right_child;
-                stack_ptr = stack_ptr + 1u;
-                stack[stack_ptr] = left_child;
-                stack_ptr = stack_ptr + 1u;
+
+            // Fetch child nodes (bounds packed sequentially)
+            let leftNode = get_bvh_node(left_child);
+            let rightNode = get_bvh_node(right_child);
+
+            // Compute entry t for ordering (reuse aabb test but avoid pruning yet)
+            let tLeft = ray_aabb_intersect(ray, leftNode.minCorner, leftNode.maxCorner);
+            let tRight = ray_aabb_intersect(ray, rightNode.minCorner, rightNode.maxCorner);
+
+            // If both miss or behind current closest hit, skip pushing
+            let leftValid = (tLeft >= 0.0) && (tLeft <= closest_hit.t);
+            let rightValid = (tRight >= 0.0) && (tRight <= closest_hit.t);
+            if (leftValid || rightValid) {
+                // Push farther first so nearer is processed immediately
+                if (leftValid && rightValid) {
+                    if (tLeft < tRight) {
+                        if (stack_ptr < 31u) { stack[stack_ptr] = right_child; stack_ptr = stack_ptr + 1u; }
+                        if (stack_ptr < 31u) { stack[stack_ptr] = left_child; stack_ptr = stack_ptr + 1u; }
+                    } else {
+                        if (stack_ptr < 31u) { stack[stack_ptr] = left_child; stack_ptr = stack_ptr + 1u; }
+                        if (stack_ptr < 31u) { stack[stack_ptr] = right_child; stack_ptr = stack_ptr + 1u; }
+                    }
+                } else if (leftValid) {
+                    if (stack_ptr < 31u) { stack[stack_ptr] = left_child; stack_ptr = stack_ptr + 1u; }
+                } else if (rightValid) {
+                    if (stack_ptr < 31u) { stack[stack_ptr] = right_child; stack_ptr = stack_ptr + 1u; }
+                }
             }
         }
     }
